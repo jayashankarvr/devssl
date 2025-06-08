@@ -2325,8 +2325,6 @@ fn print_qr_terminal(code: &qrcode::QrCode) {
 }
 
 fn cmd_doctor(paths: &Paths) -> Result<()> {
-    use std::process::Command;
-
     println!("Checking devssl installation...");
     println!();
 
@@ -2375,6 +2373,7 @@ fn cmd_doctor(paths: &Paths) -> Result<()> {
     // 3. Firefox NSS status (Linux only, if certutil available)
     #[cfg(target_os = "linux")]
     {
+        use std::process::Command;
         let certutil_available = Command::new("which")
             .arg("certutil")
             .output()

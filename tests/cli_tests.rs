@@ -27,7 +27,9 @@ struct TestEnv {
 impl TestEnv {
     fn new() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
-        let data_dir = temp_dir.path().join("share").join("devssl");
+        // Use DEVSSL_ROOT for cross-platform compatibility
+        // (XDG_DATA_HOME is ignored on macOS by the directories crate)
+        let data_dir = temp_dir.path().join("devssl");
 
         TestEnv {
             _temp_dir: temp_dir,
@@ -35,16 +37,12 @@ impl TestEnv {
         }
     }
 
-    /// Get the XDG_DATA_HOME value to use
-    fn xdg_data_home(&self) -> PathBuf {
-        self._temp_dir.path().join("share")
-    }
-
     /// Run devssl command with isolated environment
     fn run(&self, args: &[&str]) -> std::process::Output {
         Command::new(devssl_bin())
             .args(args)
-            .env("XDG_DATA_HOME", self.xdg_data_home())
+            // Use DEVSSL_ROOT instead of XDG_DATA_HOME for cross-platform compatibility
+            .env("DEVSSL_ROOT", &self.data_dir)
             .env("HOME", self._temp_dir.path())
             .output()
             .expect("Failed to execute devssl")
@@ -1541,7 +1539,7 @@ fn test_import_ca() {
     let env2 = TestEnv::new();
     let mut child = Command::new(devssl_bin())
         .args(["import-ca", export_path.to_str().unwrap()])
-        .env("XDG_DATA_HOME", env2.xdg_data_home())
+        .env("DEVSSL_ROOT", &env2.data_dir)
         .env("HOME", env2._temp_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

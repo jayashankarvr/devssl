@@ -551,18 +551,16 @@ mod tests {
         // Save the original value if set
         let original = std::env::var("DEVSSL_ROOT").ok();
 
-        // Set the env var to a custom path
-        let custom_path = "/custom/devssl/path";
-        std::env::set_var("DEVSSL_ROOT", custom_path);
+        // Use a temp directory for cross-platform compatibility
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let custom_path = temp_dir.path().join("devssl");
+        std::env::set_var("DEVSSL_ROOT", &custom_path);
 
         let paths = Paths::new().unwrap();
-        assert_eq!(paths.base, PathBuf::from(custom_path));
-        assert_eq!(paths.ca_cert, PathBuf::from(custom_path).join("ca.crt"));
-        assert_eq!(paths.ca_key, PathBuf::from(custom_path).join("ca.key"));
-        assert_eq!(
-            paths.ca_key_enc,
-            PathBuf::from(custom_path).join("ca.key.enc")
-        );
+        assert_eq!(paths.base, custom_path);
+        assert_eq!(paths.ca_cert, custom_path.join("ca.crt"));
+        assert_eq!(paths.ca_key, custom_path.join("ca.key"));
+        assert_eq!(paths.ca_key_enc, custom_path.join("ca.key.enc"));
 
         // Restore original value
         match original {
@@ -640,13 +638,17 @@ mod tests {
     #[test]
     fn test_cert_path_sanitizes_domain() {
         let original = std::env::var("DEVSSL_ROOT").ok();
-        std::env::set_var("DEVSSL_ROOT", "/tmp/test");
+
+        // Use a temp directory for cross-platform compatibility
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let test_path = temp_dir.path().join("test");
+        std::env::set_var("DEVSSL_ROOT", &test_path);
 
         let paths = Paths::new().unwrap();
 
         // Valid domain should work
         let cert = paths.cert_path("example.com").unwrap();
-        assert_eq!(cert, PathBuf::from("/tmp/test/example.com.crt"));
+        assert_eq!(cert, test_path.join("example.com.crt"));
 
         // Malicious domain should fail
         assert!(paths.cert_path("../../../etc/passwd").is_err());
@@ -661,13 +663,17 @@ mod tests {
     #[test]
     fn test_key_path_sanitizes_domain() {
         let original = std::env::var("DEVSSL_ROOT").ok();
-        std::env::set_var("DEVSSL_ROOT", "/tmp/test");
+
+        // Use a temp directory for cross-platform compatibility
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let test_path = temp_dir.path().join("test");
+        std::env::set_var("DEVSSL_ROOT", &test_path);
 
         let paths = Paths::new().unwrap();
 
         // Valid domain should work
         let key = paths.key_path("example.com").unwrap();
-        assert_eq!(key, PathBuf::from("/tmp/test/example.com.key"));
+        assert_eq!(key, test_path.join("example.com.key"));
 
         // Malicious domain should fail
         assert!(paths.key_path("../../../etc/passwd").is_err());
