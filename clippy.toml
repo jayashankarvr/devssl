@@ -1,0 +1,5 @@
+# Clippy configuration
+# https://doc.rust-lang.org/clippy/
+
+# MSRV for lint compatibility
+msrv = "1.70"

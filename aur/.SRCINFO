@@ -1,0 +1,15 @@
+pkgbase = devssl
+	pkgdesc = Zero-config local HTTPS certificates for development
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/jayashankarvr/devssl
+	arch = x86_64
+	arch = aarch64
+	license = Apache-2.0
+	makedepends = rust
+	makedepends = cargo
+	depends = gcc-libs
+	source = devssl-0.1.0.tar.gz::https://github.com/jayashankarvr/devssl/archive/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = devssl

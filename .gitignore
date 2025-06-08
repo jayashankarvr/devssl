@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certificate files
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+
+# Environment files
+.env
+.env.*
+
+# Coverage files
+coverage/
+*.profraw
+*.profdata
+tarpaulin-report.html
+
+# Build artifacts
+dist/
+release/
+*.deb
+*.rpm
+
+# Backup directory
+devssl-backup/
+
+# Log files
+*.log
