@@ -219,8 +219,9 @@ pub async fn run_proxy_with_redirect(
                             // Check if this might be a WebSocket upgrade
                             // We need to handle the connection with upgrades enabled
                             let io = TokioIo::new(tls_stream);
+                            let peer = peer_addr;
                             let svc = service_fn(move |req| {
-                                handle_request(req, backend.clone(), Arc::clone(&client))
+                                handle_request(req, backend.clone(), Arc::clone(&client), peer)
                             });
 
                             let conn = http1::Builder::new()
@@ -269,11 +270,12 @@ async fn handle_request(
     req: Request<Incoming>,
     backend_addr: String,
     client: Arc<HttpClient>,
+    peer_addr: SocketAddr,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     if is_websocket_upgrade(&req) {
         handle_websocket_upgrade(req, &backend_addr).await
     } else {
-        proxy_request(req, &backend_addr, client).await
+        proxy_request(req, &backend_addr, client, peer_addr).await
     }
 }
 
@@ -592,6 +594,7 @@ async fn proxy_request(
     req: Request<Incoming>,
     backend_addr: &str,
     client: Arc<HttpClient>,
+    peer_addr: SocketAddr,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     let uri = format!(
         "http://{}{}",
@@ -623,6 +626,14 @@ async fn proxy_request(
         }
     }
 
+    // Extract original host before consuming the request
+    let original_host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost")
+        .to_string();
+
     let (parts, body) = req.into_parts();
 
     // Use Limited to enforce body size limit (protects against chunked encoding without Content-Length)
@@ -646,11 +657,24 @@ async fn proxy_request(
 
     let mut backend_req = Request::builder().method(parts.method).uri(&uri);
     for (name, value) in parts.headers.iter() {
-        if name != hyper::header::HOST {
+        // Skip headers we'll set ourselves
+        let name_lower = name.as_str().to_lowercase();
+        if name != hyper::header::HOST
+            && !name_lower.starts_with("x-forwarded-")
+            && name_lower != "x-real-ip"
+        {
             backend_req = backend_req.header(name, value);
         }
     }
-    backend_req = backend_req.header(hyper::header::HOST, backend_addr);
+    // Use original host for Host header (strip port for proper app routing)
+    let host_without_port = original_host.split(':').next().unwrap_or("localhost");
+    backend_req = backend_req.header(hyper::header::HOST, host_without_port);
+
+    // Add standard proxy headers so backends know the original request was HTTPS
+    backend_req = backend_req.header("X-Forwarded-Proto", "https");
+    backend_req = backend_req.header("X-Forwarded-For", peer_addr.ip().to_string());
+    backend_req = backend_req.header("X-Forwarded-Host", original_host);
+    backend_req = backend_req.header("X-Real-IP", peer_addr.ip().to_string());
 
     let backend_req = match backend_req.body(Full::new(body_bytes)) {
         Ok(req) => req,
