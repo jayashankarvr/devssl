@@ -4,7 +4,7 @@
 class Devssl < Formula
   desc "Zero-config local HTTPS certificates for development"
   homepage "https://github.com/jayashankarvr/devssl"
-  version "0.1.0"
+  version "0.2.1"
   license "Apache-2.0"
 
   on_macos do

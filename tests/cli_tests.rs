@@ -44,6 +44,8 @@ impl TestEnv {
             // Use DEVSSL_ROOT instead of XDG_DATA_HOME for cross-platform compatibility
             .env("DEVSSL_ROOT", &self.data_dir)
             .env("HOME", self._temp_dir.path())
+            // Allow /tmp usage for testing
+            .env("DEVSSL_ALLOW_SYSTEM_PATHS", "1")
             .output()
             .expect("Failed to execute devssl")
     }
@@ -1581,6 +1583,7 @@ fn test_import_ca() {
         ])
         .env("DEVSSL_ROOT", &env2.data_dir)
         .env("HOME", env2._temp_dir.path())
+        .env("DEVSSL_ALLOW_SYSTEM_PATHS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

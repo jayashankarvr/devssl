@@ -544,10 +544,8 @@ async fn handle_websocket_upgrade(
     });
 
     Ok(response.body(Full::new(Bytes::new())).unwrap_or_else(|_| {
-        Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Full::new(Bytes::from("Failed to build response")))
-            .unwrap()
+        eprintln!("CRITICAL: Failed to build redirect response");
+        Response::new(Full::new(Bytes::from_static(b"Internal Server Error")))
     }))
 }
 
@@ -662,10 +660,8 @@ fn handle_redirect(
             url = https_url
         ))))
         .unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Full::new(Bytes::from("Failed to build response")))
-                .unwrap()
+            eprintln!("CRITICAL: Failed to build redirect response");
+            Response::new(Full::new(Bytes::from_static(b"Internal Server Error")))
         }))
 }
 

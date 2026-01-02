@@ -27,12 +27,6 @@ brew tap jayashankarvr/devssl
 brew install devssl
 ```
 
-### Cargo
-
-```bash
-cargo install devssl
-```
-
 ### From Source
 
 ```bash
@@ -432,6 +426,22 @@ Note: `cert_days` is used by `init --days` when no value is specified. The `gene
 | `SSL_CERT_FILE`       | Standard env var for certificate path (set by `devssl init`)             |
 | `SSL_KEY_FILE`        | Standard env var for key path (set by `devssl init`)                     |
 | `NODE_EXTRA_CA_CERTS` | Path to CA cert for Node.js applications                                 |
+
+## Acknowledgments
+
+`devssl` was inspired by [mkcert](https://github.com/FiloSottile/mkcert) by [@FiloSottile](https://github.com/FiloSottile). We're grateful for the excellent work on mkcert which pioneered the zero-config local HTTPS approach.
+
+`devssl` builds on this foundation with additional features:
+
+- HTTPS reverse proxy with WebSocket support
+- Background auto-renewal daemon with certificate watching
+- Backup/restore and team CA sharing (export-ca/import-ca)
+- QR code generation for mobile device setup
+- Configuration generators (nginx, traefik, docker-compose)
+- Doctor command for trust store diagnostics
+- Native Rust implementation for performance and safety
+
+Both tools share the same philosophy: making local HTTPS development simple and secure.
 
 ## License
 

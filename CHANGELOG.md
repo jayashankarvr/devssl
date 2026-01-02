@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-01-02
+
+### Security
+
+- **Fixed panic risk in proxy error handlers** - Replaced `.unwrap()` calls with panic-free alternatives
+  - Proxy now safely logs errors instead of crashing on malformed error responses
+  - Ensures production code upholds "zero panic" guarantee
+
+### Added
+
+- **DEVSSL_ROOT validation** - Prevents accidental certificate writes to system directories
+  - Hard fail when DEVSSL_ROOT points to `/etc`, `/usr`, `/bin`, `/var`, `/tmp`, etc.
+  - Set `DEVSSL_ALLOW_SYSTEM_PATHS=1` to override for testing/CI environments
+  - Prevents permission errors and security issues from misconfiguration
+
 ## [0.2.0] - 2026-01-02
 
 ### Added

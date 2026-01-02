@@ -175,22 +175,33 @@ impl Paths {
                 )));
             }
 
-            // Warn about potentially dangerous locations (but allow them)
+            // Check for potentially dangerous locations
             let path_str = custom_root.to_lowercase();
-            if path_str.starts_with("/etc")
+            let is_system_path = path_str.starts_with("/etc")
                 || path_str.starts_with("/usr")
                 || path_str.starts_with("/bin")
                 || path_str.starts_with("/sbin")
                 || path_str.starts_with("/lib")
                 || path_str.starts_with("/var")
                 || path_str == "/tmp"
-                || path_str.starts_with("/tmp/")
-            {
+                || path_str.starts_with("/tmp/");
+
+            if is_system_path {
+                // Allow override for testing/CI, but require explicit flag
+                let allow_override = std::env::var("DEVSSL_ALLOW_SYSTEM_PATHS").is_ok();
+                if !allow_override {
+                    return Err(Error::Config(format!(
+                        "DEVSSL_ROOT cannot point to system directory: {}\n\
+                         System directories may cause permission errors or security issues.\n\
+                         \n\
+                         To override (not recommended), set: DEVSSL_ALLOW_SYSTEM_PATHS=1",
+                        custom_root
+                    )));
+                }
                 eprintln!(
-                    "Warning: DEVSSL_ROOT points to system directory: {}",
+                    "Warning: DEVSSL_ROOT points to system directory: {} (override enabled)",
                     custom_root
                 );
-                eprintln!("         Consider using a user-specific directory instead.");
             }
 
             return Ok(path);
@@ -554,11 +565,13 @@ mod tests {
     fn test_paths_respects_devssl_root_env() {
         // Save the original value if set
         let original = std::env::var("DEVSSL_ROOT").ok();
+        let original_allow = std::env::var("DEVSSL_ALLOW_SYSTEM_PATHS").ok();
 
         // Use a temp directory for cross-platform compatibility
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let custom_path = temp_dir.path().join("devssl");
         std::env::set_var("DEVSSL_ROOT", &custom_path);
+        std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", "1"); // Allow /tmp for testing
 
         let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
         assert_eq!(paths.base, custom_path);
@@ -566,10 +579,14 @@ mod tests {
         assert_eq!(paths.ca_key, custom_path.join("ca.key"));
         assert_eq!(paths.ca_key_enc, custom_path.join("ca.key.enc"));
 
-        // Restore original value
+        // Restore original values
         match original {
             Some(val) => std::env::set_var("DEVSSL_ROOT", val),
             None => std::env::remove_var("DEVSSL_ROOT"),
+        }
+        match original_allow {
+            Some(val) => std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", val),
+            None => std::env::remove_var("DEVSSL_ALLOW_SYSTEM_PATHS"),
         }
     }
 
@@ -645,11 +662,13 @@ mod tests {
     #[test]
     fn test_cert_path_sanitizes_domain() {
         let original = std::env::var("DEVSSL_ROOT").ok();
+        let original_allow = std::env::var("DEVSSL_ALLOW_SYSTEM_PATHS").ok();
 
         // Use a temp directory for cross-platform compatibility
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let test_path = temp_dir.path().join("test");
         std::env::set_var("DEVSSL_ROOT", &test_path);
+        std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", "1"); // Allow /tmp for testing
 
         let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
 
@@ -667,16 +686,22 @@ mod tests {
             Some(val) => std::env::set_var("DEVSSL_ROOT", val),
             None => std::env::remove_var("DEVSSL_ROOT"),
         }
+        match original_allow {
+            Some(val) => std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", val),
+            None => std::env::remove_var("DEVSSL_ALLOW_SYSTEM_PATHS"),
+        }
     }
 
     #[test]
     fn test_key_path_sanitizes_domain() {
         let original = std::env::var("DEVSSL_ROOT").ok();
+        let original_allow = std::env::var("DEVSSL_ALLOW_SYSTEM_PATHS").ok();
 
         // Use a temp directory for cross-platform compatibility
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let test_path = temp_dir.path().join("test");
         std::env::set_var("DEVSSL_ROOT", &test_path);
+        std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", "1"); // Allow /tmp for testing
 
         let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
 
@@ -693,6 +718,10 @@ mod tests {
         match original {
             Some(val) => std::env::set_var("DEVSSL_ROOT", val),
             None => std::env::remove_var("DEVSSL_ROOT"),
+        }
+        match original_allow {
+            Some(val) => std::env::set_var("DEVSSL_ALLOW_SYSTEM_PATHS", val),
+            None => std::env::remove_var("DEVSSL_ALLOW_SYSTEM_PATHS"),
         }
     }
 }
