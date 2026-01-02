@@ -1,10 +1,7 @@
 // Copyright 2025 Jayashankar
 // SPDX-License-Identifier: Apache-2.0
 
-//! Auto-renewal daemon for certificate management.
-//!
-//! This module provides a background daemon that periodically checks
-//! certificates and renews them before they expire.
+//! Background daemon for auto-renewal.
 
 use crate::ca::Ca;
 use crate::cert::Cert;
@@ -30,18 +27,7 @@ const LOCK_HANDOFF_RETRIES: u32 = 30;
 /// Seconds in one hour (for converting check_interval_hours to seconds)
 const SECONDS_PER_HOUR: u64 = 3600;
 
-/// Password encrypted with a session-unique random key.
-///
-/// This protects the CA password from exposure via `/proc/<pid>/environ` on Linux,
-/// `ps eww` on macOS, or Process Explorer on Windows. The password is XOR'd with
-/// a random key that only exists in heap memory (never in environment variables).
-///
-/// # Security Properties
-/// - Environment variable is cleared after reading
-/// - Random key is generated fresh each daemon session
-/// - Key only exists in heap memory, not accessible via /proc/environ
-/// - XOR with random pad provides perfect secrecy
-/// - Both key and encrypted data are securely zeroized on drop (using `zeroize` crate)
+/// XOR-encrypted password (not visible in /proc or process lists).
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SecurePassword {
     encrypted: Vec<u8>,

@@ -51,8 +51,8 @@ devssl proxy 3000 --https-port 8443
 # HTTP to HTTPS redirect
 devssl proxy 3000 --redirect
 
-# Skip backend check (for hot-reload scenarios)
-devssl proxy 3000 --skip-check
+# Use specific certificate (default: localhost)
+devssl proxy 3000 --cert myapp.local
 ```
 
 ## Environment Variables

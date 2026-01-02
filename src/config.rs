@@ -452,7 +452,8 @@ mod tests {
     #[test]
     fn test_config_load_missing_file() {
         let path = PathBuf::from("/nonexistent/config.toml");
-        let config = Config::load(&path).unwrap();
+        let config =
+            Config::load(&path).expect("Config should load with defaults for missing file");
 
         // Should return defaults
         assert_eq!(config.cert_days, 365);
@@ -461,29 +462,29 @@ mod tests {
 
     #[test]
     fn test_config_load_custom_values() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "cert_days = 7").unwrap();
-        writeln!(file, "ca_days = 365").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "cert_days = 7").expect("write cert_days should succeed");
+        writeln!(file, "ca_days = 365").expect("write ca_days should succeed");
 
-        let config = Config::load(file.path()).unwrap();
+        let config = Config::load(file.path()).expect("Config should load successfully");
         assert_eq!(config.cert_days, 7);
         assert_eq!(config.ca_days, 365);
     }
 
     #[test]
     fn test_config_load_partial() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "cert_days = 14").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "cert_days = 14").expect("write cert_days should succeed");
         // ca_days missing - should use default
 
-        let config = Config::load(file.path()).unwrap();
+        let config = Config::load(file.path()).expect("Config should load with partial values");
         assert_eq!(config.cert_days, 14);
         assert_eq!(config.ca_days, 3650); // default
     }
 
     #[test]
     fn test_config_save_and_load() {
-        let file = NamedTempFile::new().unwrap();
+        let file = NamedTempFile::new().expect("temp file should be created");
         let config = Config {
             config_version: 1,
             cert_days: 90,
@@ -491,8 +492,10 @@ mod tests {
             daemon: DaemonConfig::default(),
         };
 
-        config.save(file.path()).unwrap();
-        let loaded = Config::load(file.path()).unwrap();
+        config
+            .save(file.path())
+            .expect("Config should save successfully");
+        let loaded = Config::load(file.path()).expect("Config should load after save");
 
         assert_eq!(loaded.config_version, 1);
         assert_eq!(loaded.cert_days, 90);
@@ -501,8 +504,8 @@ mod tests {
 
     #[test]
     fn test_config_invalid_cert_days_zero() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "cert_days = 0").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "cert_days = 0").expect("write cert_days should succeed");
 
         let result = Config::load(file.path());
         assert!(result.is_err());
@@ -510,8 +513,8 @@ mod tests {
 
     #[test]
     fn test_config_invalid_cert_days_too_large() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "cert_days = 999999").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "cert_days = 999999").expect("write cert_days should succeed");
 
         let result = Config::load(file.path());
         assert!(result.is_err());
@@ -519,8 +522,8 @@ mod tests {
 
     #[test]
     fn test_config_invalid_ca_days_zero() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "ca_days = 0").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "ca_days = 0").expect("write ca_days should succeed");
 
         let result = Config::load(file.path());
         assert!(result.is_err());
@@ -528,9 +531,10 @@ mod tests {
 
     #[test]
     fn test_config_invalid_daemon_check_interval_zero() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "[daemon]").unwrap();
-        writeln!(file, "check_interval_hours = 0").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "[daemon]").expect("write daemon section should succeed");
+        writeln!(file, "check_interval_hours = 0")
+            .expect("write check_interval_hours should succeed");
 
         let result = Config::load(file.path());
         assert!(result.is_err());
@@ -538,9 +542,9 @@ mod tests {
 
     #[test]
     fn test_config_invalid_daemon_renew_within_days_zero() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "[daemon]").unwrap();
-        writeln!(file, "renew_within_days = 0").unwrap();
+        let mut file = NamedTempFile::new().expect("temp file should be created");
+        writeln!(file, "[daemon]").expect("write daemon section should succeed");
+        writeln!(file, "renew_within_days = 0").expect("write renew_within_days should succeed");
 
         let result = Config::load(file.path());
         assert!(result.is_err());
@@ -556,7 +560,7 @@ mod tests {
         let custom_path = temp_dir.path().join("devssl");
         std::env::set_var("DEVSSL_ROOT", &custom_path);
 
-        let paths = Paths::new().unwrap();
+        let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
         assert_eq!(paths.base, custom_path);
         assert_eq!(paths.ca_cert, custom_path.join("ca.crt"));
         assert_eq!(paths.ca_key, custom_path.join("ca.key"));
@@ -622,15 +626,18 @@ mod tests {
     fn test_sanitize_domain_wildcard() {
         // Wildcard domains should be allowed with * replaced by _wildcard_
         assert_eq!(
-            Paths::sanitize_domain_for_filename("*.localhost").unwrap(),
+            Paths::sanitize_domain_for_filename("*.localhost")
+                .expect("wildcard localhost should be valid"),
             "_wildcard_.localhost"
         );
         assert_eq!(
-            Paths::sanitize_domain_for_filename("*.example.com").unwrap(),
+            Paths::sanitize_domain_for_filename("*.example.com")
+                .expect("wildcard example.com should be valid"),
             "_wildcard_.example.com"
         );
         assert_eq!(
-            Paths::sanitize_domain_for_filename("foo*bar").unwrap(),
+            Paths::sanitize_domain_for_filename("foo*bar")
+                .expect("embedded wildcard should be valid"),
             "foo_wildcard_bar"
         );
     }
@@ -644,10 +651,12 @@ mod tests {
         let test_path = temp_dir.path().join("test");
         std::env::set_var("DEVSSL_ROOT", &test_path);
 
-        let paths = Paths::new().unwrap();
+        let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
 
         // Valid domain should work
-        let cert = paths.cert_path("example.com").unwrap();
+        let cert = paths
+            .cert_path("example.com")
+            .expect("example.com should be a valid domain");
         assert_eq!(cert, test_path.join("example.com.crt"));
 
         // Malicious domain should fail
@@ -669,10 +678,12 @@ mod tests {
         let test_path = temp_dir.path().join("test");
         std::env::set_var("DEVSSL_ROOT", &test_path);
 
-        let paths = Paths::new().unwrap();
+        let paths = Paths::new().expect("Paths should be created from DEVSSL_ROOT");
 
         // Valid domain should work
-        let key = paths.key_path("example.com").unwrap();
+        let key = paths
+            .key_path("example.com")
+            .expect("example.com should be a valid domain");
         assert_eq!(key, test_path.join("example.com.key"));
 
         // Malicious domain should fail

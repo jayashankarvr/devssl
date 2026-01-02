@@ -10,16 +10,20 @@ use rcgen::{
 };
 use std::fs;
 
+/// Default Common Name for the local Certificate Authority.
 pub const CA_COMMON_NAME: &str = "devssl Local CA";
+
+/// Default Organization Name for the local Certificate Authority.
 pub const CA_ORG_NAME: &str = "devssl";
 
-/// Local CA for signing development certificates.
+/// Certificate Authority for local development.
 pub struct Ca {
     pub key_pair: KeyPair,
     pub cert_pem: String,
 }
 
 impl Ca {
+    /// Generate a new CA valid for the specified number of days.
     pub fn generate(days: u32) -> Result<Self> {
         crate::cert::validate_days(days)?;
         let key_pair = KeyPair::generate()?;
@@ -29,12 +33,12 @@ impl Ca {
         Ok(Self { key_pair, cert_pem })
     }
 
-    /// Load CA from unencrypted key file
+    /// Load CA from disk.
     pub fn load(paths: &Paths) -> Result<Self> {
         Self::load_with_password(paths, None)
     }
 
-    /// Load CA with optional password for encrypted key
+    /// Load CA with optional password.
     pub fn load_with_password(paths: &Paths, password: Option<&str>) -> Result<Self> {
         if !paths.ca_exists() {
             return Err(Error::CaNotInitialized);
@@ -61,9 +65,7 @@ impl Ca {
         Ok(Self { key_pair, cert_pem })
     }
 
-    /// Create an Issuer for signing certificates
-    ///
-    /// Note: This recreates the KeyPair because Issuer takes ownership
+    /// Create an Issuer for signing certificates (recreates KeyPair for ownership).
     pub fn issuer(&self) -> Result<Issuer<'_, KeyPair>> {
         let key_pem = self.key_pair.serialize_pem();
         let key_pair = KeyPair::from_pem(&key_pem)?;
@@ -88,23 +90,21 @@ impl Ca {
         Ok(params.self_signed(key_pair)?)
     }
 
-    /// Save CA without encryption
+    /// Save CA cert and key (unencrypted).
     pub fn save(&self, paths: &Paths) -> Result<()> {
         self.save_with_password(paths, None)
     }
 
-    /// Save CA with optional password for encryption
+    /// Save CA with optional password encryption (AES-256-CBC).
     pub fn save_with_password(&self, paths: &Paths, password: Option<&str>) -> Result<()> {
         paths.ensure_dir()?;
 
         if let Some(password) = password {
-            // Encrypt and save the key atomically
             let key_pem = self.key_pair.serialize_pem();
             let encrypted_pem = encrypt_key_pem(&key_pem, password)?;
             crate::fs::atomic_write_secret(&paths.ca_key_enc, encrypted_pem.as_bytes())?;
 
-            // Remove unencrypted key if it exists (security: don't leave unencrypted key behind)
-            // Use remove directly without exists() check to avoid TOCTOU race
+            // Remove unencrypted key (avoid TOCTOU)
             match fs::remove_file(&paths.ca_key) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -116,14 +116,12 @@ impl Ca {
                 }
             }
         } else {
-            // Save unencrypted key atomically
             crate::fs::atomic_write_secret(
                 &paths.ca_key,
                 self.key_pair.serialize_pem().as_bytes(),
             )?;
 
-            // Remove encrypted key if it exists (cleanup old encrypted key)
-            // Use remove directly without exists() check to avoid TOCTOU race
+            // Remove old encrypted key (avoid TOCTOU)
             match fs::remove_file(&paths.ca_key_enc) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -136,18 +134,18 @@ impl Ca {
             }
         }
 
-        // Save certificate atomically
         crate::fs::atomic_write(&paths.ca_cert, self.cert_pem.as_bytes())?;
         Ok(())
     }
 
+    /// Returns the number of days until the CA certificate expires.
     pub fn days_remaining(&self) -> Result<i64> {
         let info = crate::x509::parse_cert_pem(&self.cert_pem)?;
         Ok(info.days_remaining())
     }
 }
 
-/// Encrypt a PEM private key with a password using PKCS#8 with AES-256-CBC
+/// Encrypt private key with password (scrypt + AES-256-CBC).
 pub fn encrypt_key_pem(key_pem: &str, password: &str) -> Result<String> {
     use pkcs8::der::Decode;
     use rand::RngCore;
@@ -156,22 +154,18 @@ pub fn encrypt_key_pem(key_pem: &str, password: &str) -> Result<String> {
         return Err(Error::KeyEncryption("Password cannot be empty".to_string()));
     }
 
-    // Parse the PEM to get the DER bytes
     let pem_obj = pem::parse(key_pem)
         .map_err(|e| Error::KeyEncryption(format!("Failed to parse PEM: {}", e)))?;
 
-    // Parse the PrivateKeyInfo from DER
     let pki = PrivateKeyInfo::from_der(pem_obj.contents())
         .map_err(|e| Error::KeyEncryption(format!("Failed to parse key: {}", e)))?;
 
-    // Generate random salt and IV
     let mut rng = rand::rng();
     let mut salt = [0u8; 16];
     let mut iv = [0u8; 16];
     rng.fill_bytes(&mut salt);
     rng.fill_bytes(&mut iv);
 
-    // Encrypt using AES-256-CBC with scrypt
     let encrypted = pki
         .encrypt_with_params(
             pkcs8::pkcs5::pbes2::Parameters::scrypt_aes256cbc(
@@ -186,7 +180,6 @@ pub fn encrypt_key_pem(key_pem: &str, password: &str) -> Result<String> {
         )
         .map_err(|e| Error::KeyEncryption(format!("Encryption failed: {}", e)))?;
 
-    // Convert to PEM
     let pem_str = encrypted
         .to_pem("ENCRYPTED PRIVATE KEY", LineEnding::LF)
         .map_err(|e| Error::KeyEncryption(format!("Failed to convert to PEM: {}", e)))?;
@@ -194,7 +187,7 @@ pub fn encrypt_key_pem(key_pem: &str, password: &str) -> Result<String> {
     Ok(pem_str.to_string())
 }
 
-/// Decrypt a PEM encrypted private key with a password
+/// Decrypt private key with password.
 pub fn decrypt_key_pem(encrypted_pem: &str, password: &str) -> Result<String> {
     use pkcs8::der::Decode;
 
@@ -202,20 +195,16 @@ pub fn decrypt_key_pem(encrypted_pem: &str, password: &str) -> Result<String> {
         return Err(Error::KeyDecryption("Password cannot be empty".to_string()));
     }
 
-    // Parse the encrypted PEM
     let pem_obj = pem::parse(encrypted_pem)
         .map_err(|e| Error::KeyDecryption(format!("Failed to parse encrypted PEM: {}", e)))?;
 
-    // Parse the EncryptedPrivateKeyInfo
     let encrypted = EncryptedPrivateKeyInfo::from_der(pem_obj.contents())
         .map_err(|e| Error::KeyDecryption(format!("Failed to parse encrypted key: {}", e)))?;
 
-    // Decrypt the key
     let decrypted = encrypted
         .decrypt(password)
         .map_err(|_| Error::PasswordIncorrect)?;
 
-    // Convert back to PEM
     let pem_str = decrypted
         .to_pem("PRIVATE KEY", LineEnding::LF)
         .map_err(|e| Error::KeyDecryption(format!("Failed to convert to PEM: {}", e)))?;
@@ -223,7 +212,7 @@ pub fn decrypt_key_pem(encrypted_pem: &str, password: &str) -> Result<String> {
     Ok(pem_str.to_string())
 }
 
-/// Decrypt an encrypted key file with a password
+/// Decrypt encrypted key file.
 pub fn decrypt_key_file(path: &std::path::Path, password: &str) -> Result<String> {
     let encrypted_pem = fs::read_to_string(path).map_err(|e| Error::ReadFile {
         path: path.to_path_buf(),
@@ -232,7 +221,7 @@ pub fn decrypt_key_file(path: &std::path::Path, password: &str) -> Result<String
     decrypt_key_pem(&encrypted_pem, password)
 }
 
-/// Encrypt an existing CA key file
+/// Encrypt existing CA key and remove plaintext version.
 pub fn encrypt_existing_key(paths: &Paths, password: &str) -> Result<()> {
     if !paths.ca_key.exists() {
         return Err(Error::CaNotInitialized);
@@ -264,7 +253,9 @@ pub fn encrypt_existing_key(paths: &Paths, password: &str) -> Result<()> {
     Ok(())
 }
 
-/// Decrypt an encrypted CA key file (removes encryption)
+/// Decrypt an encrypted CA key file and save it unencrypted.
+///
+/// Removes the encrypted file after successfully writing the unencrypted key.
 pub fn decrypt_existing_key(paths: &Paths, password: &str) -> Result<()> {
     if !paths.ca_key_enc.exists() {
         return Err(Error::NoEncryptedKey(paths.ca_key_enc.clone()));
@@ -290,7 +281,9 @@ pub fn decrypt_existing_key(paths: &Paths, password: &str) -> Result<()> {
     Ok(())
 }
 
-/// Change the password on an encrypted CA key
+/// Change the password on an encrypted CA key.
+///
+/// Decrypts with the old password and re-encrypts with the new password.
 pub fn change_key_password(paths: &Paths, old_password: &str, new_password: &str) -> Result<()> {
     if !paths.ca_key_enc.exists() {
         return Err(Error::NoEncryptedKey(paths.ca_key_enc.clone()));
@@ -314,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_ca_generate() {
-        let ca = Ca::generate(30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
 
         assert!(!ca.key_pair.serialize_pem().is_empty());
         assert!(ca.cert_pem.contains("BEGIN CERTIFICATE"));
@@ -329,15 +322,17 @@ mod tests {
 
     #[test]
     fn test_ca_cert_pem() {
-        let ca = Ca::generate(30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
 
         assert!(ca.cert_pem.contains("BEGIN CERTIFICATE"));
     }
 
     #[test]
     fn test_ca_days_remaining() {
-        let ca = Ca::generate(30).unwrap();
-        let days = ca.days_remaining().unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let days = ca
+            .days_remaining()
+            .expect("days remaining should be calculated");
 
         assert!(days >= 29);
         assert!(days <= 30);

@@ -22,15 +22,19 @@ use rustls::ServerConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt}; // shutdown() comes from AsyncWriteExt
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
+
+/// Graceful shutdown timeout for draining in-flight connections.
+const GRACEFUL_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 use crate::{Error, Result};
 
 type HttpClient = Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>;
 
-/// Maximum body size for proxied requests (10 MB).
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+/// Default maximum body size for proxied requests (10 MB).
+pub const DEFAULT_MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 const MAX_CONNECTIONS: usize = 1024;
 const WEBSOCKET_BUFFER_SIZE: usize = 16 * 1024;
@@ -43,16 +47,16 @@ fn error_response(status: StatusCode, body: impl Into<Bytes>) -> Response<Full<B
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"Internal Server Error"))))
 }
 
+/// Load TLS config from cert/key files (validates expiry).
 pub async fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<ServerConfig> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
 
-    // Use spawn_blocking to avoid blocking the async runtime
+    // Blocking I/O
     let cert_path_owned = cert_path.to_path_buf();
     let key_path_owned = key_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
-        // Check if certificate is expired before loading
         let cert_pem = std::fs::read_to_string(&cert_path_owned).map_err(|e| Error::ReadFile {
             path: cert_path_owned.clone(),
             source: e,
@@ -77,7 +81,6 @@ pub async fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Server
             match result {
                 Ok(cert) => cert_chain.push(cert),
                 Err(e) => {
-                    // All certificates in the chain must be valid
                     return Err(Error::Config(format!(
                         "Failed to parse certificate {} in chain: {}",
                         i + 1,
@@ -108,32 +111,38 @@ pub async fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Server
     .map_err(|e| Error::Config(format!("Task join error: {}", e)))?
 }
 
-/// Configuration for the HTTP-to-HTTPS redirect server.
+/// HTTP-to-HTTPS redirect server config.
 #[derive(Clone)]
 pub struct RedirectConfig {
-    /// Port to listen on for HTTP (e.g., 80 or 8080)
     pub http_port: u16,
-    /// HTTPS port to redirect to
     pub https_port: u16,
-    /// Host for redirect URL (e.g., "localhost")
     pub host: String,
-    /// Address to bind the redirect server to (e.g., "127.0.0.1" or "0.0.0.0")
     pub bind: String,
 }
 
+/// Run HTTPS proxy (no redirect).
 pub async fn run_proxy(
     listen_addr: SocketAddr,
     backend_addr: String,
     tls_config: ServerConfig,
 ) -> Result<()> {
-    run_proxy_with_redirect(listen_addr, backend_addr, tls_config, None).await
+    run_proxy_with_redirect(
+        listen_addr,
+        backend_addr,
+        tls_config,
+        None,
+        DEFAULT_MAX_BODY_SIZE,
+    )
+    .await
 }
 
+/// Run HTTPS proxy with optional HTTP redirect.
 pub async fn run_proxy_with_redirect(
     listen_addr: SocketAddr,
     backend_addr: String,
     tls_config: ServerConfig,
     redirect_config: Option<RedirectConfig>,
+    max_body_size: usize,
 ) -> Result<()> {
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
     let listener = TcpListener::bind(listen_addr)
@@ -143,13 +152,14 @@ pub async fn run_proxy_with_redirect(
     let client: HttpClient = Client::builder(TokioExecutor::new()).build_http();
     let client = Arc::new(client);
 
-    // Connection limiter to prevent DoS attacks
+    // Connection limiter
     let connection_semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     println!("HTTPS proxy listening on https://{}", listen_addr);
     println!("Forwarding to http://{}", backend_addr);
 
-    // Start HTTP redirect server if configured
     if let Some(ref redirect) = redirect_config {
         let redirect_addr: SocketAddr = format!("{}:{}", redirect.bind, redirect.http_port)
             .parse()
@@ -168,26 +178,54 @@ pub async fn run_proxy_with_redirect(
         );
 
         let redirect_config = redirect.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            run_redirect_server(redirect_listener, redirect_config).await;
+            run_redirect_server(redirect_listener, redirect_config, shutdown_rx).await;
         });
     }
 
     println!("Press Ctrl+C to stop");
 
-    let shutdown = async {
-        let _ = signal::ctrl_c().await;
-        println!("\nShutting down...");
-    };
+    // Track all spawned connection tasks for graceful shutdown
+    let mut connection_tasks: JoinSet<()> = JoinSet::new();
 
-    tokio::select! {
-        _ = shutdown => {
-            println!("Proxy stopped.");
-            Ok(())
-        }
-        result = async {
-            loop {
-                let (stream, peer_addr) = match listener.accept().await {
+    loop {
+        tokio::select! {
+            // Handle Ctrl+C signal
+            _ = signal::ctrl_c() => {
+                println!("\nShutting down gracefully...");
+
+                // Notify redirect server to stop accepting
+                let _ = shutdown_tx.send(());
+
+                // Wait for in-flight connections with timeout
+                let active_count = connection_tasks.len();
+                if active_count > 0 {
+                    println!("Waiting for {} active connection(s) to complete (timeout: {}s)...",
+                             active_count, GRACEFUL_SHUTDOWN_TIMEOUT.as_secs());
+
+                    let drain_result = tokio::time::timeout(
+                        GRACEFUL_SHUTDOWN_TIMEOUT,
+                        drain_connections(&mut connection_tasks)
+                    ).await;
+
+                    match drain_result {
+                        Ok(_) => println!("All connections completed."),
+                        Err(_) => {
+                            let remaining = connection_tasks.len();
+                            println!("Timeout reached, aborting {} remaining connection(s).", remaining);
+                            connection_tasks.abort_all();
+                        }
+                    }
+                }
+
+                println!("Proxy stopped.");
+                return Ok(());
+            }
+
+            // Accept new connections
+            accept_result = listener.accept() => {
+                let (stream, peer_addr) = match accept_result {
                     Ok(conn) => conn,
                     Err(e) => {
                         eprintln!("Accept error: {}", e);
@@ -209,8 +247,10 @@ pub async fn run_proxy_with_redirect(
                 let acceptor = tls_acceptor.clone();
                 let backend = backend_addr.clone();
                 let client = Arc::clone(&client);
+                let body_limit = max_body_size;
 
-                tokio::spawn(async move {
+                // Spawn connection handler and track it in JoinSet
+                connection_tasks.spawn(async move {
                     // Hold the permit for the duration of the connection
                     let _permit = permit;
 
@@ -221,7 +261,7 @@ pub async fn run_proxy_with_redirect(
                             let io = TokioIo::new(tls_stream);
                             let peer = peer_addr;
                             let svc = service_fn(move |req| {
-                                handle_request(req, backend.clone(), Arc::clone(&client), peer)
+                                handle_request(req, backend.clone(), Arc::clone(&client), peer, body_limit)
                             });
 
                             let conn = http1::Builder::new()
@@ -237,11 +277,17 @@ pub async fn run_proxy_with_redirect(
                         Err(e) => eprintln!("TLS handshake failed from {}: {}", peer_addr, e),
                     }
                 });
+
+                // Clean up completed tasks to prevent unbounded growth
+                while connection_tasks.try_join_next().is_some() {}
             }
-            #[allow(unreachable_code)]
-            Ok::<(), Error>(())
-        } => result
+        }
     }
+}
+
+/// Drain all connections from the JoinSet, waiting for each to complete.
+async fn drain_connections(tasks: &mut JoinSet<()>) {
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Check if the request is a WebSocket upgrade request.
@@ -271,11 +317,12 @@ async fn handle_request(
     backend_addr: String,
     client: Arc<HttpClient>,
     peer_addr: SocketAddr,
+    max_body_size: usize,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     if is_websocket_upgrade(&req) {
         handle_websocket_upgrade(req, &backend_addr).await
     } else {
-        proxy_request(req, &backend_addr, client, peer_addr).await
+        proxy_request(req, &backend_addr, client, peer_addr, max_body_size).await
     }
 }
 
@@ -505,48 +552,80 @@ async fn handle_websocket_upgrade(
 }
 
 /// Run the HTTP-to-HTTPS redirect server.
-async fn run_redirect_server(listener: TcpListener, config: RedirectConfig) {
+async fn run_redirect_server(
+    listener: TcpListener,
+    config: RedirectConfig,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
     // Connection limiter for redirect server
     let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
+    // Track connection tasks for graceful shutdown
+    let mut connection_tasks: JoinSet<()> = JoinSet::new();
+
     loop {
-        let (stream, peer_addr) = match listener.accept().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                eprintln!("HTTP redirect accept error: {}", e);
-                continue;
-            }
-        };
+        tokio::select! {
+            // Handle shutdown signal
+            _ = shutdown_rx.recv() => {
+                // Wait for in-flight connections with timeout
+                let active_count = connection_tasks.len();
+                if active_count > 0 {
+                    let drain_result = tokio::time::timeout(
+                        GRACEFUL_SHUTDOWN_TIMEOUT,
+                        drain_connections(&mut connection_tasks)
+                    ).await;
 
-        // Acquire permit from semaphore
-        let permit = match semaphore.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                eprintln!(
-                    "Redirect connection limit reached, rejecting connection from {}",
-                    peer_addr
-                );
-                drop(stream);
-                continue;
-            }
-        };
-
-        let config = config.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-
-            let io = TokioIo::new(stream);
-            let svc = service_fn(move |req| {
-                let config = config.clone();
-                async move { handle_redirect(req, config) }
-            });
-
-            if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                if !e.to_string().contains("connection closed") {
-                    eprintln!("HTTP redirect connection error: {}", e);
+                    if drain_result.is_err() {
+                        connection_tasks.abort_all();
+                    }
                 }
+                return;
             }
-        });
+
+            // Accept new connections
+            accept_result = listener.accept() => {
+                let (stream, peer_addr) = match accept_result {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        eprintln!("HTTP redirect accept error: {}", e);
+                        continue;
+                    }
+                };
+
+                // Acquire permit from semaphore
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        eprintln!(
+                            "Redirect connection limit reached, rejecting connection from {}",
+                            peer_addr
+                        );
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                let config = config.clone();
+                connection_tasks.spawn(async move {
+                    let _permit = permit;
+
+                    let io = TokioIo::new(stream);
+                    let svc = service_fn(move |req| {
+                        let config = config.clone();
+                        async move { handle_redirect(req, config) }
+                    });
+
+                    if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                        if !e.to_string().contains("connection closed") {
+                            eprintln!("HTTP redirect connection error: {}", e);
+                        }
+                    }
+                });
+
+                // Clean up completed tasks
+                while connection_tasks.try_join_next().is_some() {}
+            }
+        }
     }
 }
 
@@ -595,6 +674,7 @@ async fn proxy_request(
     backend_addr: &str,
     client: Arc<HttpClient>,
     peer_addr: SocketAddr,
+    max_body_size: usize,
 ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
     let uri = format!(
         "http://{}{}",
@@ -609,16 +689,16 @@ async fn proxy_request(
     if let Some(content_length) = req.headers().get(CONTENT_LENGTH) {
         if let Ok(length_str) = content_length.to_str() {
             if let Ok(length) = length_str.parse::<usize>() {
-                if length > MAX_BODY_SIZE {
+                if length > max_body_size {
                     eprintln!(
                         "Request rejected: body size {} exceeds limit {}",
-                        length, MAX_BODY_SIZE
+                        length, max_body_size
                     );
                     return Ok(Response::builder()
                         .status(StatusCode::PAYLOAD_TOO_LARGE)
                         .body(Full::new(Bytes::from(format!(
                             "Request body too large. Maximum size is {} bytes.",
-                            MAX_BODY_SIZE
+                            max_body_size
                         ))))
                         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
                 }
@@ -637,19 +717,19 @@ async fn proxy_request(
     let (parts, body) = req.into_parts();
 
     // Use Limited to enforce body size limit (protects against chunked encoding without Content-Length)
-    let limited_body = Limited::new(body, MAX_BODY_SIZE);
+    let limited_body = Limited::new(body, max_body_size);
     let body_bytes = match limited_body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => {
             eprintln!(
                 "Request rejected: chunked body exceeds limit {}",
-                MAX_BODY_SIZE
+                max_body_size
             );
             return Ok(Response::builder()
                 .status(StatusCode::PAYLOAD_TOO_LARGE)
                 .body(Full::new(Bytes::from(format!(
                     "Request body too large. Maximum size is {} bytes.",
-                    MAX_BODY_SIZE
+                    max_body_size
                 ))))
                 .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
         }
@@ -691,19 +771,19 @@ async fn proxy_request(
         Ok(resp) => {
             let (parts, body) = resp.into_parts();
             // Limit response body size to prevent memory exhaustion
-            let limited_body = Limited::new(body, MAX_BODY_SIZE);
+            let limited_body = Limited::new(body, max_body_size);
             match limited_body.collect().await {
                 Ok(collected) => {
                     let body_bytes = collected.to_bytes();
                     Ok(Response::from_parts(parts, Full::new(body_bytes)))
                 }
                 Err(_) => {
-                    eprintln!("Response rejected: body exceeds limit {}", MAX_BODY_SIZE);
+                    eprintln!("Response rejected: body exceeds limit {}", max_body_size);
                     Ok(Response::builder()
                         .status(StatusCode::BAD_GATEWAY)
                         .body(Full::new(Bytes::from(format!(
                             "Response body too large. Maximum size is {} bytes.",
-                            MAX_BODY_SIZE
+                            max_body_size
                         ))))
                         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))))
                 }

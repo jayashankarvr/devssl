@@ -37,8 +37,8 @@ pub mod trust;
 pub mod x509;
 
 pub use ca::{
-    change_key_password, decrypt_existing_key, encrypt_existing_key, Ca, CA_COMMON_NAME,
-    CA_ORG_NAME,
+    change_key_password, decrypt_existing_key, decrypt_key_file, encrypt_existing_key, Ca,
+    CA_COMMON_NAME, CA_ORG_NAME,
 };
 pub use cert::{
     validate_days, validate_emails, Cert, CertGenerateResult, CsrSignResult, LOCALHOST_DOMAINS,
@@ -47,6 +47,8 @@ pub use cert::{
 pub use config::{Config, Paths};
 pub use error::{Error, Result};
 pub use fs::{is_reserved_name, path_to_str, write_secret_file, RESERVED_NAMES};
-pub use proxy::{load_tls_config, run_proxy, run_proxy_with_redirect, RedirectConfig};
+pub use proxy::{
+    load_tls_config, run_proxy, run_proxy_with_redirect, RedirectConfig, DEFAULT_MAX_BODY_SIZE,
+};
 pub use trust::{get_trust_store, TrustStore, TrustStoreFilter};
 pub use x509::{parse_cert_file, parse_cert_pem, CertInfo, CertType};

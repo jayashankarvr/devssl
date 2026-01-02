@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 // ============================================================================
 // Helper functions
@@ -67,6 +67,71 @@ fn list_certificates(paths: &Paths) -> Result<Vec<(String, PathBuf)>> {
 
     certs.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(certs)
+}
+
+/// Parse a human-readable size string into bytes
+/// Supports: 1024, 10K, 10KB, 10M, 10MB, 1G, 1GB (case-insensitive)
+fn parse_size(s: &str) -> std::result::Result<usize, String> {
+    let s = s.trim().to_uppercase();
+
+    // Try parsing as a plain number first
+    if let Ok(n) = s.parse::<usize>() {
+        return Ok(n);
+    }
+
+    // Extract numeric part and suffix
+    let mut num_end = 0;
+    for (i, c) in s.char_indices() {
+        if c.is_ascii_digit() || c == '.' {
+            num_end = i + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if num_end == 0 {
+        return Err(format!("Invalid size '{}': no numeric value found", s));
+    }
+
+    let num_str = &s[..num_end];
+    let suffix = s[num_end..].trim();
+
+    // Parse the numeric part (support both integer and float)
+    let value: f64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid number '{}' in size", num_str))?;
+
+    let multiplier: u64 = match suffix {
+        "" => 1,
+        "B" => 1,
+        "K" | "KB" => 1024,
+        "M" | "MB" => 1024 * 1024,
+        "G" | "GB" => 1024 * 1024 * 1024,
+        _ => {
+            return Err(format!(
+                "Unknown size suffix '{}'. Use K/KB, M/MB, or G/GB",
+                suffix
+            ))
+        }
+    };
+
+    // Check for negative values
+    if value < 0.0 {
+        return Err("Size cannot be negative".to_string());
+    }
+
+    // Check for overflow before conversion
+    let result = value * multiplier as f64;
+    if !result.is_finite() || result > usize::MAX as f64 {
+        return Err(format!("Size '{}' is too large", s));
+    }
+
+    let bytes = result as usize;
+    if bytes == 0 {
+        return Err("Size must be greater than 0".to_string());
+    }
+
+    Ok(bytes)
 }
 
 /// Prompt for a new password with confirmation
@@ -164,9 +229,9 @@ enum Commands {
         trust_stores: Option<Vec<String>>,
     },
 
-    /// Generate certificate for custom domains, S/MIME, or sign a CSR
+    /// Generate certificate for custom domains/IPs, S/MIME, or sign a CSR
     Generate {
-        /// Domain names to include in the certificate
+        /// Domain names or IP addresses to include in the certificate
         #[arg(required_unless_present_any = ["csr", "email"])]
         domains: Vec<String>,
 
@@ -211,12 +276,30 @@ enum Commands {
     Status,
 
     /// List all certificates with expiry info
-    List,
+    List {
+        /// Show all domains/SANs for each certificate
+        #[arg(long, short)]
+        verbose: bool,
+    },
 
     /// Show detailed information about a certificate
     Inspect {
         /// Certificate name to inspect
         name: String,
+    },
+
+    /// Delete a certificate
+    Delete {
+        /// Certificate name to delete
+        name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        force: bool,
+
+        /// Delete certificate but keep private key
+        #[arg(long)]
+        keep_key: bool,
     },
 
     /// Remove devssl from system
@@ -262,9 +345,9 @@ enum Commands {
         /// Backend address to forward to (PORT or HOST:PORT, e.g., "3000" or "192.168.1.5:3000")
         backend: String,
 
-        /// Certificate hostname (selects which certificate to load, does not change bind address)
+        /// Certificate name to use (selects which certificate to load)
         #[arg(long, default_value = "localhost")]
-        host: String,
+        cert: String,
 
         /// HTTPS port to listen on (defaults to backend port)
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
@@ -285,6 +368,11 @@ enum Commands {
         /// Password for encrypted CA key (or use DEVSSL_PASSWORD env)
         #[arg(long)]
         ca_password: Option<String>,
+
+        /// Maximum request/response body size in bytes (default: 10MB)
+        /// Use suffixes: K/KB for kilobytes, M/MB for megabytes, G/GB for gigabytes
+        #[arg(long, value_parser = parse_size, default_value = "10MB")]
+        max_body_size: usize,
     },
 
     /// Show certificate and CA paths
@@ -370,6 +458,10 @@ enum Commands {
         /// Output format
         #[arg(long, value_enum, default_value = "pem")]
         format: ExportFormat,
+
+        /// Password for encrypted CA key (or use DEVSSL_PASSWORD env)
+        #[arg(long)]
+        ca_password: Option<String>,
     },
 
     /// Import a shared CA certificate
@@ -703,8 +795,13 @@ fn run() -> Result<()> {
             ca_password,
         ),
         Commands::Status => cmd_status(&paths),
-        Commands::List => cmd_list(&paths),
+        Commands::List { verbose } => cmd_list(&paths, verbose),
         Commands::Inspect { name } => cmd_inspect(&paths, &name),
+        Commands::Delete {
+            name,
+            force,
+            keep_key,
+        } => cmd_delete(&paths, &name, force, keep_key),
         Commands::Uninstall { keep_certs, yes } => cmd_uninstall(&paths, keep_certs, yes),
         Commands::Renew {
             name,
@@ -725,21 +822,23 @@ fn run() -> Result<()> {
         ),
         Commands::Proxy {
             backend,
-            host,
+            cert,
             https_port,
             redirect,
             http_port,
             bind,
             ca_password,
+            max_body_size,
         } => cmd_proxy(
             &paths,
             ProxyConfig {
                 backend: &backend,
-                host: &host,
+                cert: &cert,
                 https_port,
                 redirect,
                 http_port,
                 bind: &bind,
+                max_body_size,
             },
             ca_password,
         ),
@@ -759,7 +858,8 @@ fn run() -> Result<()> {
             include_key,
             output,
             format,
-        } => cmd_export_ca(&paths, include_key, output.as_deref(), format),
+            ca_password,
+        } => cmd_export_ca(&paths, include_key, output.as_deref(), format, ca_password),
         Commands::ImportCa { file, trust, force } => cmd_import_ca(&paths, &file, trust, force),
         Commands::EncryptKey { password } => cmd_encrypt_key(&paths, password),
         Commands::DecryptKey { password } => cmd_decrypt_key(&paths, password),
@@ -1243,7 +1343,7 @@ fn check_expiring_certificates(paths: &Paths) {
     }
 }
 
-fn cmd_list(paths: &Paths) -> Result<()> {
+fn cmd_list(paths: &Paths, verbose: bool) -> Result<()> {
     if !paths.ca_exists() {
         return Err(Error::CaNotInitialized);
     }
@@ -1256,8 +1356,12 @@ fn cmd_list(paths: &Paths) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<12} {:>8}  TYPE", "NAME", "EXPIRES", "DAYS");
-    println!("{}", "-".repeat(55));
+    // Print header
+    println!(
+        "{:<20} {:<12} {:>8}  {:<8} DOMAINS",
+        "NAME", "EXPIRES", "DAYS", "TYPE"
+    );
+    println!("{}", "-".repeat(80));
 
     for (name, path) in certs {
         let info = devssl::parse_cert_file(&path).ok();
@@ -1284,7 +1388,30 @@ fn cmd_list(paths: &Paths) -> Result<()> {
             days.to_string()
         };
 
-        println!("{:<20} {:<12} {:>8}  {}", name, expiry, days_str, cert_type);
+        // Get domains/SANs
+        let domains = info
+            .as_ref()
+            .map(|i| {
+                let mut all = i.subject_alt_names.clone();
+                all.extend(i.emails.clone());
+                all
+            })
+            .unwrap_or_default();
+
+        let domains_str = if verbose {
+            domains.join(", ")
+        } else if domains.is_empty() {
+            "none".to_string()
+        } else if domains.len() == 1 {
+            domains[0].clone()
+        } else {
+            format!("{} +{}", domains[0], domains.len() - 1)
+        };
+
+        println!(
+            "{:<20} {:<12} {:>8}  {:<8} {}",
+            name, expiry, days_str, cert_type, domains_str
+        );
     }
 
     Ok(())
@@ -1296,56 +1423,173 @@ fn cmd_inspect(paths: &Paths, name: &str) -> Result<()> {
 
     let info = devssl::parse_cert_file(&cert_path)?;
 
-    println!("Certificate: {}", name);
-    println!("===========");
-    println!();
-    println!("File:       {}", cert_path.display());
-    println!("Key:        {}", paths.key_path(name)?.display());
-    println!();
-
     // Type
     let cert_type = match info.cert_type {
-        devssl::CertType::Server => "TLS Server (serverAuth)",
-        devssl::CertType::Client => "TLS Client (clientAuth)",
-        devssl::CertType::Smime => "S/MIME (emailProtection)",
-        devssl::CertType::Unknown => "Unknown",
+        devssl::CertType::Server => "Server Certificate",
+        devssl::CertType::Client => "Client Certificate",
+        devssl::CertType::Smime => "S/MIME Certificate",
+        devssl::CertType::Unknown => "Certificate",
     };
-    println!("Type:       {}", cert_type);
 
-    // Common Name
-    if let Some(cn) = &info.common_name {
-        println!("Common Name: {}", cn);
-    }
+    println!("Name:        {}", name);
+    println!("Type:        {}", cert_type);
+
+    // Issued and expiry dates
+    let issued = match ::time::OffsetDateTime::from_unix_timestamp(info.not_before_timestamp) {
+        Ok(dt) => format!(
+            "{}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+            dt.year(),
+            dt.month() as u8,
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        ),
+        Err(_) => "Invalid date".to_string(),
+    };
+
+    let expires = match ::time::OffsetDateTime::from_unix_timestamp(info.not_after_timestamp) {
+        Ok(dt) => format!(
+            "{}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+            dt.year(),
+            dt.month() as u8,
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        ),
+        Err(_) => "Invalid date".to_string(),
+    };
+
+    let days = info.days_remaining();
+    let days_str = if days >= 0 {
+        format!("{} days", days)
+    } else {
+        format!("expired {} days ago", -days)
+    };
+
+    println!("Issued:      {}", issued);
+    println!("Expires:     {} ({})", expires, days_str);
+
+    // Status
+    let status = if days < 0 {
+        "Expired"
+    } else if days <= 7 {
+        "Expiring soon"
+    } else {
+        "Valid"
+    };
+    println!("Status:      {}", status);
+    println!();
 
     // Subject Alternative Names
     if !info.subject_alt_names.is_empty() {
-        println!("SANs:");
+        println!("Subject Alternative Names:");
         for san in &info.subject_alt_names {
-            println!("    - {}", san);
+            println!("  - {}", san);
         }
+        println!();
     }
 
     // Email addresses (for S/MIME)
     if !info.emails.is_empty() {
-        println!("Emails:");
+        println!("Email Addresses:");
         for email in &info.emails {
-            println!("    - {}", email);
+            println!("  - {}", email);
         }
+        println!();
     }
 
+    // Key usage based on certificate type
+    match info.cert_type {
+        devssl::CertType::Server => {
+            println!("Key Usage:       Digital Signature, Key Encipherment");
+            println!("Extended Usage:  TLS Web Server Authentication");
+        }
+        devssl::CertType::Client => {
+            println!("Key Usage:       Digital Signature");
+            println!("Extended Usage:  TLS Web Client Authentication");
+        }
+        devssl::CertType::Smime => {
+            println!("Key Usage:       Digital Signature, Key Encipherment");
+            println!("Extended Usage:  Email Protection");
+        }
+        devssl::CertType::Unknown => {}
+    }
+
+    // Fingerprint
+    if let Ok(fingerprint) = compute_ca_fingerprint(&cert_path) {
+        println!();
+        println!("SHA-256 Fingerprint: {}", fingerprint);
+    }
+
+    // File paths
     println!();
+    println!("Files:");
+    println!("  Certificate: {}", cert_path.display());
+    println!("  Private Key: {}", paths.key_path(name)?.display());
 
-    // Validity
-    let days = info.days_remaining();
-    let expiry = info.expiry_string();
-    if days < 0 {
-        println!("Status:     EXPIRED ({} days ago)", -days);
-    } else if days <= 7 {
-        println!("Status:     Expiring soon ({} days)", days);
-    } else {
-        println!("Status:     Valid ({} days remaining)", days);
+    Ok(())
+}
+
+fn cmd_delete(paths: &Paths, name: &str, force: bool, keep_key: bool) -> Result<()> {
+    // Prevent deletion of CA
+    if name == "ca" {
+        return Err(Error::Config(
+            "Cannot delete CA certificate. Use 'devssl uninstall' instead.".to_string(),
+        ));
     }
-    println!("Expires:    {}", expiry);
+
+    // Check if certificate exists
+    let cert_path = paths.cert_path(name)?;
+    let key_path = paths.key_path(name)?;
+
+    if !cert_path.exists() {
+        return Err(Error::Config(format!("Certificate '{}' not found", name)));
+    }
+
+    // Confirm deletion unless --force
+    if !force && !confirm_prompt(&format!("Delete certificate '{}'?", name)) {
+        eprintln!("Cancelled.");
+        return Ok(());
+    }
+
+    let mut deleted_files = Vec::new();
+
+    // Delete certificate
+    std::fs::remove_file(&cert_path).map_err(|e| Error::WriteFile {
+        path: cert_path.clone(),
+        source: e,
+    })?;
+    deleted_files.push(format!("  - {}", cert_path.display()));
+
+    // Delete key unless --keep-key
+    if !keep_key && key_path.exists() {
+        std::fs::remove_file(&key_path).map_err(|e| Error::WriteFile {
+            path: key_path.clone(),
+            source: e,
+        })?;
+        deleted_files.push(format!("  - {}", key_path.display()));
+    }
+
+    // Delete PKCS12 file if it exists
+    let p12_path = paths.base.join(format!("{}.p12", name));
+    if p12_path.exists() {
+        std::fs::remove_file(&p12_path).map_err(|e| Error::WriteFile {
+            path: p12_path.clone(),
+            source: e,
+        })?;
+        deleted_files.push(format!("  - {}", p12_path.display()));
+    }
+
+    println!("Deleted certificate '{}':", name);
+    for file in deleted_files {
+        println!("{}", file);
+    }
+
+    if keep_key && key_path.exists() {
+        println!("\nPrivate key preserved: {}", key_path.display());
+    }
 
     Ok(())
 }
@@ -1647,7 +1891,6 @@ fn cmd_chain(paths: &Paths, name: &str, output: Option<&std::path::Path>) -> Res
         }
     })?;
 
-    // Read the CA certificate
     let ca_pem = std::fs::read_to_string(&paths.ca_cert).map_err(|e| Error::ReadFile {
         path: paths.ca_cert.clone(),
         source: e,
@@ -1672,11 +1915,12 @@ fn cmd_chain(paths: &Paths, name: &str, output: Option<&std::path::Path>) -> Res
 /// Configuration for the proxy command
 struct ProxyConfig<'a> {
     backend: &'a str,
-    host: &'a str,
+    cert: &'a str,
     https_port: Option<u16>,
     redirect: bool,
     http_port: u16,
     bind: &'a str,
+    max_body_size: usize,
 }
 
 fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) -> Result<()> {
@@ -1745,11 +1989,11 @@ fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) ->
 
     // Determine which certificate to use based on host
     let cert_name =
-        if config.host == "localhost" || config.host == "127.0.0.1" || config.host == "::1" {
+        if config.cert == "localhost" || config.cert == "127.0.0.1" || config.cert == "::1" {
             "localhost".to_string()
         } else {
             // For custom hosts, use the host as cert name (e.g., myapp.local)
-            config.host.to_string()
+            config.cert.to_string()
         };
 
     // Use ensure_cert_exists for consistent error handling
@@ -1773,15 +2017,25 @@ fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) ->
             }
             result.cert.save(paths, "localhost")?;
             println!("  Generated localhost certificate.");
+            println!("  Adding CA to trust store...");
+            match get_trust_store().add_ca(&paths.ca_cert) {
+                Ok(_) => println!("  Certificate is now trusted."),
+                Err(e) => eprintln!("  Warning: Could not add to trust store: {}", e),
+            }
         } else {
             // Generate cert for custom host
-            println!("Certificate for {} not found. Generating...", config.host);
-            let result = Cert::generate(&ca, &[config.host.to_string()], app_config.cert_days)?;
+            println!("Certificate for {} not found. Generating...", config.cert);
+            let result = Cert::generate(&ca, &[config.cert.to_string()], app_config.cert_days)?;
             if let Some(warning) = &result.warning {
                 eprintln!("  Warning: {}", warning);
             }
             result.cert.save(paths, &cert_name)?;
-            println!("  Generated certificate for {}.", config.host);
+            println!("  Generated certificate for {}.", config.cert);
+            println!("  Adding CA to trust store...");
+            match get_trust_store().add_ca(&paths.ca_cert) {
+                Ok(_) => println!("  Certificate is now trusted."),
+                Err(e) => eprintln!("  Warning: Could not add to trust store: {}", e),
+            }
         }
     }
 
@@ -1801,7 +2055,7 @@ fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) ->
         Some(RedirectConfig {
             http_port: config.http_port,
             https_port: listen_port,
-            host: config.host.to_string(),
+            host: config.cert.to_string(),
             bind: config.bind.to_string(),
         })
     } else {
@@ -1817,7 +2071,14 @@ fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) ->
         println!("Loading TLS configuration...");
         let tls_config = load_tls_config(&cert_path, &key_path).await?;
 
-        run_proxy_with_redirect(listen_addr, backend_addr, tls_config, redirect_config).await
+        run_proxy_with_redirect(
+            listen_addr,
+            backend_addr,
+            tls_config,
+            redirect_config,
+            config.max_body_size,
+        )
+        .await
     })
 }
 
@@ -1826,6 +2087,8 @@ fn cmd_nginx(paths: &Paths, name: &str) -> Result<()> {
     let cert_path = paths.ensure_cert_exists(name)?;
     let key_path = paths.ensure_key_exists(name)?;
 
+    println!("# Minimal nginx SSL configuration for development");
+    println!("# For production, add cipher config and ssl_trusted_certificate");
     println!("ssl_certificate {};", cert_path.display());
     println!("ssl_certificate_key {};", key_path.display());
     println!("ssl_protocols TLSv1.2 TLSv1.3;");
@@ -1838,6 +2101,8 @@ fn cmd_traefik(paths: &Paths, name: &str) -> Result<()> {
     let cert_path = paths.ensure_cert_exists(name)?;
     let key_path = paths.ensure_key_exists(name)?;
 
+    println!("# Minimal traefik TLS configuration for development");
+    println!("# For production, add CA trust and TLS options");
     println!("tls:");
     println!("  certificates:");
     println!("    - certFile: {}", cert_path.display());
@@ -1851,6 +2116,8 @@ fn cmd_docker_compose(paths: &Paths, name: &str) -> Result<()> {
     let cert_path = paths.ensure_cert_exists(name)?;
     let key_path = paths.ensure_key_exists(name)?;
 
+    println!("# Minimal docker-compose volumes for SSL certificates");
+    println!("# Replace 'app' with your service name. For CA trust, also mount ca.crt");
     println!("services:");
     println!("  app:");
     println!("    volumes:");
@@ -2122,7 +2389,7 @@ fn cmd_qr(paths: &Paths, save: Option<&std::path::Path>, port: u16, bind: &str) 
     const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
     // Auto-shutdown after 5 minutes of inactivity
-    let mut last_request = SystemTime::now();
+    let mut last_request = Instant::now();
     const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300);
 
     // Track consecutive errors to prevent infinite loop on persistent errors
@@ -2130,27 +2397,18 @@ fn cmd_qr(paths: &Paths, save: Option<&std::path::Path>, port: u16, bind: &str) 
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
     while running.load(Ordering::SeqCst) {
-        // Check for inactivity timeout
-        match last_request.elapsed() {
-            Ok(elapsed) => {
-                if elapsed > INACTIVITY_TIMEOUT {
-                    println!(
-                        "Auto-shutting down after {} seconds of inactivity.",
-                        INACTIVITY_TIMEOUT.as_secs()
-                    );
-                    break;
-                }
-            }
-            Err(e) => {
-                // System clock went backwards - reset the timer to now
-                eprintln!("Warning: System clock skew detected: {}", e);
-                last_request = SystemTime::now();
-            }
+        // Check for inactivity timeout (using Instant for monotonic time)
+        if last_request.elapsed() > INACTIVITY_TIMEOUT {
+            println!(
+                "Auto-shutting down after {} seconds of inactivity.",
+                INACTIVITY_TIMEOUT.as_secs()
+            );
+            break;
         }
         match listener.accept() {
             Ok((mut stream, addr)) => {
                 consecutive_errors = 0; // Reset on successful accept
-                last_request = SystemTime::now(); // Update last request time
+                last_request = Instant::now(); // Update last request time
 
                 // Rate limiting check
                 let ip = addr.ip().to_string();
@@ -2511,6 +2769,7 @@ fn cmd_export_ca(
     include_key: bool,
     output: Option<&std::path::Path>,
     format: ExportFormat,
+    ca_password: Option<String>,
 ) -> Result<()> {
     use std::io::Write;
 
@@ -2549,11 +2808,20 @@ fn cmd_export_ca(
                 eprintln!("         Share securely and only with trusted team members!");
                 eprintln!();
 
-                let ca_key_pem =
+                // Handle encrypted keys
+                let ca_key_pem = if paths.ca_key_is_encrypted() {
+                    let password = get_password(
+                        ca_password.clone(),
+                        "DEVSSL_PASSWORD",
+                        "Enter CA key password: ",
+                    )?;
+                    devssl::decrypt_key_file(&paths.ca_key_enc, &password)?
+                } else {
                     std::fs::read_to_string(&paths.ca_key).map_err(|e| Error::ReadFile {
                         path: paths.ca_key.clone(),
                         source: e,
-                    })?;
+                    })?
+                };
                 content.extend_from_slice(b"\n");
                 content.extend_from_slice(ca_key_pem.as_bytes());
             }

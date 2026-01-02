@@ -306,7 +306,9 @@ fn test_generate_with_output_directory() {
         "generate",
         "custom.local",
         "--output",
-        output_dir.to_str().unwrap(),
+        output_dir
+            .to_str()
+            .expect("output directory path should be valid UTF-8"),
     ]);
 
     assert!(
@@ -896,7 +898,7 @@ fn test_proxy_help_shows_options() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("port"), "Help should mention port");
-    assert!(stdout.contains("--host"), "Help should mention --host");
+    assert!(stdout.contains("--cert"), "Help should mention --cert");
     assert!(
         stdout.contains("--https-port"),
         "Help should mention --https-port"
@@ -1070,7 +1072,9 @@ fn test_chain_exports_to_file() {
         "chain",
         "localhost",
         "--output",
-        output_file.to_str().unwrap(),
+        output_file
+            .to_str()
+            .expect("output file path should be valid UTF-8"),
     ]);
 
     assert!(
@@ -1126,7 +1130,13 @@ fn test_backup_creates_backup_directory() {
     let backup_dir = env._temp_dir.path().join("backup");
 
     // Create backup
-    let output = env.run(&["backup", "--output", backup_dir.to_str().unwrap()]);
+    let output = env.run(&[
+        "backup",
+        "--output",
+        backup_dir
+            .to_str()
+            .expect("backup directory path should be valid UTF-8"),
+    ]);
 
     assert!(
         output.status.success(),
@@ -1173,7 +1183,13 @@ fn test_restore_from_backup() {
 
     // Create backup
     let backup_dir = env._temp_dir.path().join("backup");
-    let output = env.run(&["backup", "--output", backup_dir.to_str().unwrap()]);
+    let output = env.run(&[
+        "backup",
+        "--output",
+        backup_dir
+            .to_str()
+            .expect("backup directory path should be valid UTF-8"),
+    ]);
     assert!(output.status.success(), "Backup should succeed");
 
     // Uninstall (removes all files)
@@ -1184,7 +1200,12 @@ fn test_restore_from_backup() {
     assert!(!env.ca_cert_exists(), "CA cert should be removed");
 
     // Restore from backup
-    let output = env.run(&["restore", backup_dir.to_str().unwrap()]);
+    let output = env.run(&[
+        "restore",
+        backup_dir
+            .to_str()
+            .expect("backup directory path should be valid UTF-8"),
+    ]);
 
     assert!(
         output.status.success(),
@@ -1483,7 +1504,13 @@ fn test_export_ca_to_file() {
     assert!(output.status.success(), "Init should succeed");
 
     let export_path = env._temp_dir.path().join("exported-ca.pem");
-    let output = env.run(&["export-ca", "--output", export_path.to_str().unwrap()]);
+    let output = env.run(&[
+        "export-ca",
+        "--output",
+        export_path
+            .to_str()
+            .expect("export path should be valid UTF-8"),
+    ]);
 
     assert!(
         output.status.success(),
@@ -1505,7 +1532,9 @@ fn test_export_ca_der_format() {
     let output = env.run(&[
         "export-ca",
         "--output",
-        export_path.to_str().unwrap(),
+        export_path
+            .to_str()
+            .expect("export path should be valid UTF-8"),
         "--format",
         "der",
     ]);
@@ -1532,13 +1561,24 @@ fn test_import_ca() {
 
     // Export it
     let export_path = env._temp_dir.path().join("ca-export.pem");
-    let output = env.run(&["export-ca", "--output", export_path.to_str().unwrap()]);
+    let output = env.run(&[
+        "export-ca",
+        "--output",
+        export_path
+            .to_str()
+            .expect("export path should be valid UTF-8"),
+    ]);
     assert!(output.status.success(), "Export should succeed");
 
     // Create new env and import (need to provide "y" for confirmation prompt)
     let env2 = TestEnv::new();
     let mut child = Command::new(devssl_bin())
-        .args(["import-ca", export_path.to_str().unwrap()])
+        .args([
+            "import-ca",
+            export_path
+                .to_str()
+                .expect("export path should be valid UTF-8"),
+        ])
         .env("DEVSSL_ROOT", &env2.data_dir)
         .env("HOME", env2._temp_dir.path())
         .stdin(Stdio::piped())
@@ -1729,7 +1769,13 @@ fn test_qr_save_to_file() {
     assert!(output.status.success(), "Init should succeed");
 
     let qr_path = env._temp_dir.path().join("qr.png");
-    let output = env.run(&["qr", "--save", qr_path.to_str().unwrap()]);
+    let output = env.run(&[
+        "qr",
+        "--save",
+        qr_path
+            .to_str()
+            .expect("QR code path should be valid UTF-8"),
+    ]);
 
     assert!(
         output.status.success(),

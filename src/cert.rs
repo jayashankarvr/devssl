@@ -25,25 +25,35 @@ static EMAIL_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("invalid email regex")
 });
 
+/// A generated certificate with its private key.
 pub struct Cert {
+    /// The certificate in PEM format.
     pub pem: String,
+    /// The private key in PEM format.
     pub key_pem: String,
+    /// The domains or identifiers covered by this certificate.
     pub domains: Vec<String>,
 }
 
+/// Result of certificate generation, including optional warnings.
 pub struct CertGenerateResult {
+    /// The generated certificate.
     pub cert: Cert,
+    /// Warning message if the certificate outlives the CA or has other issues.
     pub warning: Option<String>,
 }
 
-/// Result of signing a CSR
+/// Result of signing a Certificate Signing Request (CSR).
 #[derive(Debug)]
 pub struct CsrSignResult {
+    /// The signed certificate in PEM format.
     pub cert_pem: String,
+    /// Warning message if the certificate outlives the CA or has other issues.
     pub warning: Option<String>,
 }
 
-pub const MAX_CERT_DAYS: u32 = 3650; // 10 years
+/// Maximum certificate validity period (10 years).
+pub const MAX_CERT_DAYS: u32 = 3650;
 
 /// Check if a certificate with the given validity will outlive the CA.
 /// Returns a warning message if so, None otherwise.
@@ -61,6 +71,10 @@ fn check_ca_expiry_warning(ca: &Ca, days: u32) -> Option<String> {
     })
 }
 
+/// Validate that the validity period is within allowed bounds.
+///
+/// # Errors
+/// Returns an error if `days` is 0 or exceeds [`MAX_CERT_DAYS`].
 pub fn validate_days(days: u32) -> Result<()> {
     if days == 0 {
         return Err(Error::InvalidDays("days cannot be 0".into()));
@@ -74,7 +88,10 @@ pub fn validate_days(days: u32) -> Result<()> {
     Ok(())
 }
 
+/// Default domain names included in localhost certificates.
 pub const LOCALHOST_DOMAINS: &[&str] = &["localhost", "*.localhost"];
+
+/// Default IP addresses included in localhost certificates.
 pub const LOCALHOST_IPS: &[&str] = &["127.0.0.1", "::1"];
 
 /// Certificate purpose for generation
@@ -229,7 +246,9 @@ fn generate_with_params(ca: &Ca, params: CertGenParams) -> Result<CertGenerateRe
     })
 }
 
-/// Validate email addresses using a basic regex pattern
+/// Validate email addresses for S/MIME certificate generation.
+///
+/// Checks that each email matches RFC 5321 format requirements.
 pub fn validate_emails(emails: &[String]) -> Result<()> {
     if emails.is_empty() {
         return Ok(());
@@ -248,6 +267,7 @@ pub fn validate_emails(emails: &[String]) -> Result<()> {
 }
 
 impl Cert {
+    /// Generate server certificate for the given domains.
     pub fn generate(ca: &Ca, domains: &[String], days: u32) -> Result<CertGenerateResult> {
         generate_with_params(
             ca,
@@ -260,16 +280,14 @@ impl Cert {
         )
     }
 
+    /// Generate localhost certificate (includes 127.0.0.1 and ::1).
     pub fn generate_localhost(ca: &Ca, days: u32) -> Result<CertGenerateResult> {
         let mut domains: Vec<String> = LOCALHOST_DOMAINS.iter().map(|s| s.to_string()).collect();
         domains.extend(LOCALHOST_IPS.iter().map(|s| s.to_string()));
         Self::generate(ca, &domains, days)
     }
 
-    /// Generate a client authentication certificate
-    ///
-    /// This generates a certificate with ClientAuth extended key usage,
-    /// suitable for mTLS client authentication.
+    /// Generate client certificate for mTLS.
     pub fn generate_client(ca: &Ca, domains: &[String], days: u32) -> Result<CertGenerateResult> {
         generate_with_params(
             ca,
@@ -282,14 +300,7 @@ impl Cert {
         )
     }
 
-    /// Generate an S/MIME certificate for email signing and encryption
-    ///
-    /// This generates a certificate with:
-    /// - Email addresses in Subject Alternative Name (rfc822Name)
-    /// - Extended Key Usage: emailProtection (1.3.6.1.5.5.7.3.4)
-    /// - Key Usage: digitalSignature, keyEncipherment, nonRepudiation
-    ///
-    /// Optionally, domains can be included in the SAN as well for combined use.
+    /// Generate S/MIME certificate for email encryption.
     pub fn generate_smime(
         ca: &Ca,
         emails: &[String],
@@ -307,10 +318,7 @@ impl Cert {
         )
     }
 
-    /// Export the certificate and key as a PKCS12 (.p12) file
-    ///
-    /// The PKCS12 format bundles the certificate and private key together,
-    /// which is commonly used for importing into browsers and other applications.
+    /// Export cert and key as PKCS12 (.p12) file.
     pub fn export_pkcs12(&self, path: &Path, password: &str) -> Result<()> {
         use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKeyChain};
 
@@ -351,11 +359,7 @@ impl Cert {
         Ok(())
     }
 
-    /// Sign a Certificate Signing Request (CSR) file
-    ///
-    /// This parses a PEM-encoded CSR, extracts the public key and subject information,
-    /// and signs it with the CA to create a certificate. The resulting certificate
-    /// uses the public key from the CSR, so the requester keeps their private key.
+    /// Sign a CSR file with the CA.
     pub fn sign_csr(ca: &Ca, csr_path: &Path, days: u32) -> Result<CsrSignResult> {
         validate_days(days)?;
 
@@ -461,6 +465,7 @@ impl Cert {
         })
     }
 
+    /// Save cert and key to disk.
     pub fn save(&self, paths: &Paths, name: &str) -> Result<()> {
         // Prevent overwriting critical CA files
         if is_reserved_name(name) {
@@ -791,8 +796,9 @@ mod tests {
 
     #[test]
     fn test_cert_generate() {
-        let ca = Ca::generate(365).unwrap(); // CA valid for 365 days
-        let result = Cert::generate(&ca, &["localhost".into()], 30).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated"); // CA valid for 365 days
+        let result = Cert::generate(&ca, &["localhost".into()], 30)
+            .expect("certificate should be generated");
         let cert = result.cert;
 
         assert!(!cert.pem.is_empty());
@@ -805,8 +811,9 @@ mod tests {
 
     #[test]
     fn test_cert_generate_localhost() {
-        let ca = Ca::generate(365).unwrap(); // CA valid for 365 days
-        let result = Cert::generate_localhost(&ca, 30).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated"); // CA valid for 365 days
+        let result =
+            Cert::generate_localhost(&ca, 30).expect("localhost certificate should be generated");
         let cert = result.cert;
 
         assert!(cert.domains.contains(&"localhost".to_string()));
@@ -817,13 +824,14 @@ mod tests {
 
     #[test]
     fn test_cert_generate_warning_when_outlives_ca() {
-        let ca = Ca::generate(10).unwrap(); // CA valid for 10 days
-        let result = Cert::generate(&ca, &["localhost".into()], 30).unwrap(); // Cert for 30 days
+        let ca = Ca::generate(10).expect("CA should be generated"); // CA valid for 10 days
+        let result = Cert::generate(&ca, &["localhost".into()], 30)
+            .expect("certificate should be generated"); // Cert for 30 days
 
         assert!(result.warning.is_some());
         assert!(result
             .warning
-            .unwrap()
+            .expect("warning should be present when cert outlives CA")
             .contains("exceeds CA's remaining validity"));
     }
 
@@ -867,8 +875,9 @@ mod tests {
 
     #[test]
     fn test_cert_generate_smime() {
-        let ca = Ca::generate(365).unwrap();
-        let result = Cert::generate_smime(&ca, &["user@example.com".into()], &[], 30).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
+        let result = Cert::generate_smime(&ca, &["user@example.com".into()], &[], 30)
+            .expect("S/MIME certificate should be generated");
         let cert = result.cert;
 
         assert!(!cert.pem.is_empty());
@@ -880,10 +889,10 @@ mod tests {
 
     #[test]
     fn test_cert_generate_smime_with_domains() {
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
         let result =
             Cert::generate_smime(&ca, &["user@example.com".into()], &["localhost".into()], 30)
-                .unwrap();
+                .expect("S/MIME certificate with domains should be generated");
         let cert = result.cert;
 
         // Should contain both email and domain
@@ -893,14 +902,14 @@ mod tests {
 
     #[test]
     fn test_cert_generate_smime_multiple_emails() {
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
         let result = Cert::generate_smime(
             &ca,
             &["user1@example.com".into(), "user2@example.com".into()],
             &[],
             30,
         )
-        .unwrap();
+        .expect("S/MIME certificate with multiple emails should be generated");
         let cert = result.cert;
 
         assert!(cert.domains.contains(&"user1@example.com".to_string()));
@@ -909,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_cert_generate_smime_requires_email() {
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
         // Should fail with empty email list
         let result = Cert::generate_smime(&ca, &[], &[], 30);
         assert!(result.is_err());
@@ -919,7 +928,7 @@ mod tests {
     fn test_sign_csr_validates_domains() {
         use std::io::Write;
 
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
 
         // Create a CSR for a valid localhost domain
         let mut params = CertificateParams::default();
@@ -927,18 +936,24 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "localhost");
         params.subject_alt_names.push(SanType::DnsName(
-            "localhost".to_string().try_into().unwrap(),
+            "localhost"
+                .to_string()
+                .try_into()
+                .expect("localhost should be a valid DNS name"),
         ));
 
-        let key_pair = KeyPair::generate().unwrap();
-        let csr = params.serialize_request(&key_pair).unwrap();
-        let csr_pem = csr.pem().unwrap();
+        let key_pair = KeyPair::generate().expect("key pair should be generated");
+        let csr = params
+            .serialize_request(&key_pair)
+            .expect("CSR should be serialized");
+        let csr_pem = csr.pem().expect("CSR PEM should be generated");
 
         // Write CSR to a temp file
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
         let csr_path = temp_dir.path().join("valid.csr");
-        let mut file = std::fs::File::create(&csr_path).unwrap();
-        file.write_all(csr_pem.as_bytes()).unwrap();
+        let mut file = std::fs::File::create(&csr_path).expect("CSR file should be created");
+        file.write_all(csr_pem.as_bytes())
+            .expect("CSR should be written to file");
 
         // This should succeed
         let result = Cert::sign_csr(&ca, &csr_path, 30);
@@ -949,7 +964,7 @@ mod tests {
     fn test_sign_csr_rejects_public_domains() {
         use std::io::Write;
 
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
 
         // Create a CSR for a PUBLIC domain (this should be rejected!)
         let mut params = CertificateParams::default();
@@ -957,26 +972,35 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "google.com");
         params.subject_alt_names.push(SanType::DnsName(
-            "google.com".to_string().try_into().unwrap(),
+            "google.com"
+                .to_string()
+                .try_into()
+                .expect("google.com should be a valid DNS name"),
         ));
         params.subject_alt_names.push(SanType::DnsName(
-            "*.google.com".to_string().try_into().unwrap(),
+            "*.google.com"
+                .to_string()
+                .try_into()
+                .expect("*.google.com should be a valid DNS name"),
         ));
 
-        let key_pair = KeyPair::generate().unwrap();
-        let csr = params.serialize_request(&key_pair).unwrap();
-        let csr_pem = csr.pem().unwrap();
+        let key_pair = KeyPair::generate().expect("key pair should be generated");
+        let csr = params
+            .serialize_request(&key_pair)
+            .expect("CSR should be serialized");
+        let csr_pem = csr.pem().expect("CSR PEM should be generated");
 
         // Write CSR to a temp file
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
         let csr_path = temp_dir.path().join("malicious.csr");
-        let mut file = std::fs::File::create(&csr_path).unwrap();
-        file.write_all(csr_pem.as_bytes()).unwrap();
+        let mut file = std::fs::File::create(&csr_path).expect("CSR file should be created");
+        file.write_all(csr_pem.as_bytes())
+            .expect("CSR should be written to file");
 
         // This should FAIL - we should not sign CSRs for public domains
         let result = Cert::sign_csr(&ca, &csr_path, 30);
         assert!(result.is_err());
-        match result.unwrap_err() {
+        match result.expect_err("signing public domain CSR should fail") {
             Error::InvalidDomain { domain, .. } => {
                 assert!(domain.contains("google.com"));
             }
@@ -988,26 +1012,31 @@ mod tests {
     fn test_sign_csr_rejects_public_ip() {
         use std::io::Write;
 
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
 
         // Create a CSR for a public IP address (this should be rejected!)
         let mut params = CertificateParams::default();
         params
             .distinguished_name
             .push(DnType::CommonName, "8.8.8.8");
-        params
-            .subject_alt_names
-            .push(SanType::IpAddress("8.8.8.8".parse().unwrap()));
+        params.subject_alt_names.push(SanType::IpAddress(
+            "8.8.8.8"
+                .parse()
+                .expect("8.8.8.8 should be a valid IP address"),
+        ));
 
-        let key_pair = KeyPair::generate().unwrap();
-        let csr = params.serialize_request(&key_pair).unwrap();
-        let csr_pem = csr.pem().unwrap();
+        let key_pair = KeyPair::generate().expect("key pair should be generated");
+        let csr = params
+            .serialize_request(&key_pair)
+            .expect("CSR should be serialized");
+        let csr_pem = csr.pem().expect("CSR PEM should be generated");
 
         // Write CSR to a temp file
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
         let csr_path = temp_dir.path().join("public_ip.csr");
-        let mut file = std::fs::File::create(&csr_path).unwrap();
-        file.write_all(csr_pem.as_bytes()).unwrap();
+        let mut file = std::fs::File::create(&csr_path).expect("CSR file should be created");
+        file.write_all(csr_pem.as_bytes())
+            .expect("CSR should be written to file");
 
         // This should FAIL - we should not sign CSRs for public IPs
         let result = Cert::sign_csr(&ca, &csr_path, 30);

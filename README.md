@@ -126,7 +126,7 @@ Creates CA, adds to system trust store, generates localhost certificate.
 devssl generate <domains...> [--days N] [--output DIR] [--force] [--ca-password PWD] [OPTIONS]
 ```
 
-Creates certificate for specified domains. Supports `.local`, `.test`, `.internal`, and other private TLDs.
+Creates certificate for specified domain names or IP addresses. Supports `.local`, `.test`, `.internal`, and other private TLDs, as well as private IP addresses (e.g., `192.168.1.100`, `10.0.0.5`).
 
 | Flag               | Description                                                                            |
 |--------------------|----------------------------------------------------------------------------------------|
@@ -141,21 +141,39 @@ Creates certificate for specified domains. Supports `.local`, `.test`, `.interna
 ### proxy
 
 ```bash
-devssl proxy <backend> [--host HOST] [--https-port PORT] [--redirect] [--http-port PORT] [--bind ADDR] [--ca-password PWD]
+devssl proxy <backend> [--cert NAME] [--https-port PORT] [--redirect] [--http-port PORT] [--bind ADDR] [--max-body-size SIZE] [--ca-password PWD]
 ```
 
 Runs HTTPS reverse proxy. Forwards to HTTP backend. The `<backend>` parameter accepts either a port number (e.g., `3000`) or a host:port address (e.g., `192.168.1.5:8080`).
 
-| Flag                | Description                                                                           |
-|---------------------|---------------------------------------------------------------------------------------|
-| `--host HOST`       | Certificate hostname to use (for certificate selection, not bind address)             |
-| `--https-port PORT` | HTTPS port to listen on (default: same as backend port)                               |
-| `--redirect`        | Also listen on HTTP and redirect to HTTPS                                             |
-| `--http-port PORT`  | HTTP port for redirects (default: 8080)                                               |
-| `--bind ADDR`       | Address to bind the proxy to (default: 127.0.0.1). Use 0.0.0.0 for mobile/VM testing  |
-| `--ca-password`     | Password for encrypted CA key                                                         |
+| Flag                    | Description                                                                          |
+|-------------------------|--------------------------------------------------------------------------------------|
+| `--cert NAME`           | Certificate name to use (default: localhost)                                         |
+| `--https-port PORT`     | HTTPS port to listen on (default: same as backend port)                              |
+| `--redirect`            | Also listen on HTTP and redirect to HTTPS                                            |
+| `--http-port PORT`      | HTTP port for redirects (default: 8080)                                              |
+| `--bind ADDR`           | Address to bind the proxy to (default: 127.0.0.1). Use 0.0.0.0 for mobile/VM testing |
+| `--max-body-size SIZE`  | Maximum request/response body size (default: 10MB). Supports K/KB, M/MB, G/GB        |
+| `--ca-password`         | Password for encrypted CA key                                                        |
 
-**Note:** Maximum request/response body size is 10MB.
+**Examples:**
+
+```bash
+# Large file uploads
+devssl proxy 3000 --max-body-size 100MB
+
+# Mobile testing with specific cert
+devssl proxy 3000 --bind 0.0.0.0 --cert myapp.local
+
+# Redirect HTTP to HTTPS
+devssl proxy 3000 --redirect --http-port 80
+```
+
+**Notes:**
+
+- The proxy automatically generates certificates if they don't exist
+- Backend must accept proxied headers (`X-Forwarded-Proto`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`)
+- Default body size limit is 10MB (configurable with `--max-body-size`)
 
 ### renew
 
@@ -176,10 +194,10 @@ Renews certificates expiring within N days (default: 7).
 ### list
 
 ```bash
-devssl list
+devssl list [--verbose]
 ```
 
-List all certificates with their expiry dates and status.
+List all certificates with their expiry dates, domains, and status. Use `--verbose` to show all domains instead of abbreviated list.
 
 ### inspect
 

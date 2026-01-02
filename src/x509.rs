@@ -157,11 +157,12 @@ mod tests {
     #[test]
     fn test_parse_cert_pem() {
         // Generate a test certificate
-        let ca = Ca::generate(30).unwrap();
-        let result = Cert::generate(&ca, &["localhost".into()], 30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let result = Cert::generate(&ca, &["localhost".into()], 30)
+            .expect("certificate should be generated");
 
         // Parse it back
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert!(info.days_remaining() >= 29);
         assert!(info.days_remaining() <= 30);
@@ -173,9 +174,9 @@ mod tests {
 
     #[test]
     fn test_parse_ca_cert() {
-        let ca = Ca::generate(365).unwrap();
+        let ca = Ca::generate(365).expect("CA should be generated");
 
-        let info = parse_cert_pem(&ca.cert_pem).unwrap();
+        let info = parse_cert_pem(&ca.cert_pem).expect("CA certificate PEM should be parsed");
 
         assert!(info.days_remaining() >= 364);
         assert_eq!(info.common_name, Some("devssl Local CA".to_string()));
@@ -185,8 +186,8 @@ mod tests {
 
     #[test]
     fn test_expiry_string() {
-        let ca = Ca::generate(30).unwrap();
-        let info = parse_cert_pem(&ca.cert_pem).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let info = parse_cert_pem(&ca.cert_pem).expect("CA certificate PEM should be parsed");
 
         let expiry = info.expiry_string();
         // Should be in YYYY-MM-DD format
@@ -197,10 +198,11 @@ mod tests {
 
     #[test]
     fn test_detect_server_cert_type() {
-        let ca = Ca::generate(30).unwrap();
-        let result = Cert::generate(&ca, &["localhost".into()], 30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let result = Cert::generate(&ca, &["localhost".into()], 30)
+            .expect("server certificate should be generated");
 
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert_eq!(info.cert_type, CertType::Server);
         assert!(info.emails.is_empty());
@@ -208,10 +210,11 @@ mod tests {
 
     #[test]
     fn test_detect_client_cert_type() {
-        let ca = Ca::generate(30).unwrap();
-        let result = Cert::generate_client(&ca, &["localhost".into()], 30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let result = Cert::generate_client(&ca, &["localhost".into()], 30)
+            .expect("client certificate should be generated");
 
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert_eq!(info.cert_type, CertType::Client);
         assert!(info.emails.is_empty());
@@ -219,10 +222,11 @@ mod tests {
 
     #[test]
     fn test_detect_smime_cert_type() {
-        let ca = Ca::generate(30).unwrap();
-        let result = Cert::generate_smime(&ca, &["user@example.com".into()], &[], 30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
+        let result = Cert::generate_smime(&ca, &["user@example.com".into()], &[], 30)
+            .expect("S/MIME certificate should be generated");
 
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert_eq!(info.cert_type, CertType::Smime);
         assert_eq!(info.emails, vec!["user@example.com".to_string()]);
@@ -230,16 +234,16 @@ mod tests {
 
     #[test]
     fn test_smime_cert_with_multiple_emails() {
-        let ca = Ca::generate(30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
         let result = Cert::generate_smime(
             &ca,
             &["user1@example.com".into(), "user2@example.com".into()],
             &[],
             30,
         )
-        .unwrap();
+        .expect("S/MIME certificate with multiple emails should be generated");
 
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert_eq!(info.cert_type, CertType::Smime);
         assert!(info.emails.contains(&"user1@example.com".to_string()));
@@ -248,12 +252,12 @@ mod tests {
 
     #[test]
     fn test_smime_cert_with_domains() {
-        let ca = Ca::generate(30).unwrap();
+        let ca = Ca::generate(30).expect("CA should be generated");
         let result =
             Cert::generate_smime(&ca, &["user@example.com".into()], &["localhost".into()], 30)
-                .unwrap();
+                .expect("S/MIME certificate with domains should be generated");
 
-        let info = parse_cert_pem(&result.cert.pem).unwrap();
+        let info = parse_cert_pem(&result.cert.pem).expect("certificate PEM should be parsed");
 
         assert_eq!(info.cert_type, CertType::Smime);
         assert!(info.emails.contains(&"user@example.com".to_string()));
