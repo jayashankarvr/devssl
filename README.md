@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/jayashankarvr/devssl/actions/workflows/ci.yml/badge.svg)](https://github.com/jayashankarvr/devssl/actions/workflows/ci.yml)
 [![Release](https://github.com/jayashankarvr/devssl/actions/workflows/release.yml/badge.svg)](https://github.com/jayashankarvr/devssl/actions/workflows/release.yml)
-[![Crates.io](https://img.shields.io/crates/v/devssl.svg)](https://crates.io/crates/devssl)
 [![MSRV](https://img.shields.io/badge/MSRV-1.70-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 

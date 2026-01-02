@@ -88,6 +88,8 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/devssl.exe dist/
           Copy-Item README.md, LICENSE dist/
           Compress-Archive -Path dist/* -DestinationPath devssl-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip
+          # Also copy standalone .exe for direct download
+          Copy-Item target/${{ matrix.target }}/release/devssl.exe devssl-${{ steps.version.outputs.version }}-${{ matrix.target }}.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,6 +98,7 @@ jobs:
           path: |
             devssl-*.tar.gz
             devssl-*.zip
+            devssl-*.exe
           if-no-files-found: error
 
   packages:
