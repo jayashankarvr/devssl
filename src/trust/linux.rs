@@ -82,7 +82,7 @@ impl TrustStore for LinuxTrustStore {
                 Error::TrustStore("No update command available for this distribution.".into())
             })?;
 
-            copy_with_sudo(&safe_cert_path, &dest)?;
+            install_with_tee(&safe_cert_path, &dest)?;
             run_update_command(update_cmd)?;
         }
 
@@ -304,11 +304,55 @@ fn is_sudo_auth_failure(stderr: &str) -> bool {
         || stderr.contains("Permission denied")
 }
 
-fn copy_with_sudo(src: &Path, dest: &Path) -> Result<()> {
-    let src_str = path_to_str(src)?;
+/// Install a certificate into the system trust store using `sudo tee`.
+///
+/// Unlike `sudo cp`, tee creates the destination file as root (via sudo), so the
+/// resulting file is owned root:root with 644 permissions from the system umask.
+/// `sudo cp` would preserve the source file's ownership (user:user), which causes
+/// `update-ca-certificates` to fail or corrupt the system trust store.
+fn install_with_tee(src: &Path, dest: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let cert_contents = std::fs::read(src).map_err(|e| Error::ReadFile {
+        path: src.to_path_buf(),
+        source: e,
+    })?;
+
     let dest_str = path_to_str(dest)?;
 
-    let output = run_command_with_timeout("sudo", &["cp", src_str, dest_str], SUDO_TIMEOUT_SECS)?;
+    let mut child = Command::new("sudo")
+        .args(["tee", dest_str])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null()) // suppress tee's stdout echo
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::CommandNotFound {
+                    command: "sudo".to_string(),
+                    hint: get_install_hint("sudo"),
+                }
+            } else {
+                Error::Command {
+                    command: "sudo tee".to_string(),
+                    stderr: e.to_string(),
+                }
+            }
+        })?;
+
+    // Write cert to tee's stdin, then drop to signal EOF. sudo prompts for
+    // passwords on /dev/tty rather than stdin, so piping here doesn't block auth.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&cert_contents).map_err(|e| Error::Command {
+            command: "sudo tee".to_string(),
+            stderr: e.to_string(),
+        })?;
+    }
+
+    let output = child.wait_with_output().map_err(|e| Error::Command {
+        command: "sudo tee".to_string(),
+        stderr: e.to_string(),
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -316,7 +360,7 @@ fn copy_with_sudo(src: &Path, dest: &Path) -> Result<()> {
             return Err(Error::SudoFailed);
         }
         return Err(Error::TrustStore(format!(
-            "Failed to copy certificate to trust store: {}\nTry running: sudo devssl init",
+            "Failed to install certificate to trust store: {}\nTry running: sudo devssl init",
             stderr.trim()
         )));
     }

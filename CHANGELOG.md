@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-01-02
+
+### Security - CRITICAL FIXES
+
+- **Fixed daemon PID file race condition** (src/daemon.rs:286-303)
+  - **Impact:** Multiple daemon instances could run simultaneously, causing stale PID files
+  - **Fix:** Acquire lock BEFORE checking process status to prevent TOCTOU vulnerability
+  - Race scenario eliminated: daemon can no longer start while cleanup is removing PID file
+
+- **Fixed password file cleanup on error** (src/daemon.rs:532-559)
+  - **Impact:** Password file could remain on disk if daemon startup failed
+  - **Fix:** Delete password file immediately after reading, even on UTF-8 conversion errors
+  - Defense-in-depth: cleanup on read errors added
+
+- **Fixed unbounded memory growth in QR server** (src/main.rs:2188-2248)
+  - **Impact:** DoS attack via memory exhaustion by connecting from many IPs
+  - **Fix:** Added MAX_TRACKED_IPS limit (1000) with automatic eviction of oldest entries
+  - Emergency cleanup removes 20% of oldest entries when limit exceeded
+
+### Removed - BREAKING CHANGES
+
+- **Configuration generator commands** - Removed `devssl nginx`, `devssl traefik`, and `devssl docker-compose` commands
+  - **Migration:** Use certificate paths directly with your tools (see `devssl path <name>`)
+  - Or use the built-in proxy: `devssl proxy 3000 --cert myapp.local`
+  - See README "Using Certificates with Reverse Proxies" section for generic examples
+  - **Reason:** The built-in proxy is the recommended solution for dev HTTPS
+
+- **Framework detection** - Removed `--detect` flag from `devssl init`
+  - **Migration:** No replacement needed
+  - **Reason:** Printed suggestions were not actionable; the proxy provides a better workflow
+
+### Changed
+
+- **Simplified codebase** - Reduced main.rs by ~200 lines
+  - Removed configuration generators and framework detection logic
+  - Focused on core functionality: proxy, daemon, and certificate management
+
+### Improved
+
+- **Documentation** - Updated README with generic reverse proxy configuration example
+  - Shows how to use certificates directly with any reverse proxy
+  - Emphasizes the built-in proxy as the recommended approach
+
 ## [0.2.1] - 2026-01-02
 
 ### Security

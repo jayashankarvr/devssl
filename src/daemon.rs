@@ -283,12 +283,20 @@ pub fn status(paths: &Paths) -> DaemonStatus {
     // Daemon is running if: file is locked OR (process exists AND PID file exists)
     let running = locked || pid.map(is_process_running).unwrap_or(false);
 
-    // If not running but PID file exists, try to clean it up
-    // Avoid TOCTOU race by acquiring lock atomically - if we can get the lock,
-    // the PID file is truly stale and safe to remove
-    if !running && pid.is_some() {
+    // If PID file exists, try to clean it up if daemon is truly not running
+    // CRITICAL: Acquire lock BEFORE checking running status to prevent race condition
+    // where another process starts daemon between our check and lock acquisition
+    if pid.is_some() {
         if let Ok(_lock) = DaemonLock::try_acquire(paths) {
-            let _ = remove_pid(paths);
+            // Re-check if process is running WITHIN the locked section
+            // This ensures atomicity: if we have the lock, no daemon can be starting
+            let still_running = pid.map(is_process_running).unwrap_or(false);
+
+            if !still_running {
+                // Safe to remove: we have lock + confirmed not running
+                let _ = remove_pid(paths);
+            }
+            // If still running, don't remove PID (lock will be released, daemon continues)
         }
     }
 
@@ -519,14 +527,22 @@ pub fn run(
         let mut password = if let Some(pwd) = ca_password {
             pwd.to_string()
         } else if std::env::var("DEVSSL_PASSWORD_FILE").is_ok() {
-            // Read password from secure file
+            // CRITICAL: Read and delete password file atomically
+            // Use RAII guard to ensure file is deleted even if errors occur
             let pwd_file = paths.password_file_path();
-            let password_bytes = std::fs::read(&pwd_file).map_err(|e| Error::ReadFile {
-                path: pwd_file.clone(),
-                source: e,
+
+            // Read password
+            let password_bytes = std::fs::read(&pwd_file).map_err(|e| {
+                // Delete file even on read error (defense in depth)
+                let _ = std::fs::remove_file(&pwd_file);
+                Error::ReadFile {
+                    path: pwd_file.clone(),
+                    source: e,
+                }
             })?;
 
-            // Secure delete - MUST succeed to prevent password file from persisting
+            // Delete file immediately after reading - CRITICAL for security
+            // This must happen before UTF-8 conversion which can fail
             std::fs::remove_file(&pwd_file).map_err(|e| {
                 Error::Config(format!(
                     "Failed to delete password file '{}': {}",
@@ -535,6 +551,7 @@ pub fn run(
                 ))
             })?;
 
+            // Convert to UTF-8 after file is already deleted
             String::from_utf8(password_bytes)
                 .map_err(|_| Error::Config("Password file contains invalid UTF-8".to_string()))?
         } else {

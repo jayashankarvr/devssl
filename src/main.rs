@@ -212,10 +212,6 @@ enum Commands {
         #[arg(long)]
         node: bool,
 
-        /// Auto-detect framework and show configuration hints
-        #[arg(long)]
-        detect: bool,
-
         /// Encrypt the CA private key with a password
         #[arg(long)]
         encrypt: bool,
@@ -389,27 +385,6 @@ enum Commands {
         /// Output file (default: stdout)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
-    },
-
-    /// Output nginx SSL config snippet
-    Nginx {
-        /// Certificate name (default: localhost)
-        #[arg(default_value = "localhost")]
-        name: String,
-    },
-
-    /// Output Traefik TLS config
-    Traefik {
-        /// Certificate name (default: localhost)
-        #[arg(default_value = "localhost")]
-        name: String,
-    },
-
-    /// Output docker-compose.override.yml snippet
-    DockerCompose {
-        /// Certificate name (default: localhost)
-        #[arg(default_value = "localhost")]
-        name: String,
     },
 
     /// Generate QR code for CA certificate installation on mobile devices
@@ -600,101 +575,6 @@ enum ExportFormat {
     Der,
 }
 
-struct FrameworkInfo {
-    name: &'static str,
-    config_hint: &'static str,
-}
-
-fn detect_framework() -> Option<FrameworkInfo> {
-    let cwd = std::env::current_dir().ok()?;
-    let package_json = cwd.join("package.json");
-    if package_json.exists() {
-        if let Ok(content) = std::fs::read_to_string(&package_json) {
-            if content.contains("\"next\"") {
-                return Some(FrameworkInfo { name: "Next.js", config_hint: "Add to next.config.js:\n\nconst fs = require('fs');\n\nmodule.exports = {\n  devServer: {\n    https: {\n      key: fs.readFileSync(process.env.SSL_KEY_FILE),\n      cert: fs.readFileSync(process.env.SSL_CERT_FILE),\n    },\n  },\n};\n\nOr for Next.js 13+, run with:\n  NODE_EXTRA_CA_CERTS=\"$HOME/.local/share/devssl/ca.crt\" npm run dev -- --experimental-https" });
-            }
-            if content.contains("\"vite\"") {
-                return Some(FrameworkInfo { name: "Vite", config_hint: "Add to vite.config.ts:\n\nimport fs from 'fs';\n\nexport default defineConfig({\n  server: {\n    https: {\n      key: fs.readFileSync(process.env.SSL_KEY_FILE!),\n      cert: fs.readFileSync(process.env.SSL_CERT_FILE!),\n    },\n  },\n});" });
-            }
-            if content.contains("\"react-scripts\"") {
-                return Some(FrameworkInfo { name: "Create React App", config_hint: "Set environment variables in .env:\n\nHTTPS=true\nSSL_CRT_FILE=$HOME/.local/share/devssl/localhost.crt\nSSL_KEY_FILE=$HOME/.local/share/devssl/localhost.key\n\nThen run: npm start" });
-            }
-            if content.contains("\"express\"") {
-                return Some(FrameworkInfo { name: "Express", config_hint: "Use https.createServer in your app:\n\nconst https = require('https');\nconst fs = require('fs');\nconst express = require('express');\n\nconst app = express();\n\nhttps.createServer({\n  key: fs.readFileSync(process.env.SSL_KEY_FILE),\n  cert: fs.readFileSync(process.env.SSL_CERT_FILE),\n}, app).listen(3000);" });
-            }
-            if content.contains("\"fastify\"") {
-                return Some(FrameworkInfo { name: "Fastify", config_hint: "Configure Fastify with HTTPS:\n\nconst fs = require('fs');\nconst fastify = require('fastify')({\n  https: {\n    key: fs.readFileSync(process.env.SSL_KEY_FILE),\n    cert: fs.readFileSync(process.env.SSL_CERT_FILE),\n  }\n});\n\nfastify.listen({ port: 3000 });" });
-            }
-            if content.contains("\"nuxt\"") {
-                return Some(FrameworkInfo { name: "Nuxt", config_hint: "Add to nuxt.config.ts:\n\nimport fs from 'fs';\n\nexport default defineNuxtConfig({\n  devServer: {\n    https: {\n      key: fs.readFileSync(process.env.SSL_KEY_FILE!),\n      cert: fs.readFileSync(process.env.SSL_CERT_FILE!),\n    },\n  },\n});" });
-            }
-            if content.contains("\"@sveltejs/kit\"") {
-                return Some(FrameworkInfo { name: "SvelteKit", config_hint: "Add to vite.config.ts:\n\nimport fs from 'fs';\nimport { sveltekit } from '@sveltejs/kit/vite';\n\nexport default {\n  plugins: [sveltekit()],\n  server: {\n    https: {\n      key: fs.readFileSync(process.env.SSL_KEY_FILE!),\n      cert: fs.readFileSync(process.env.SSL_CERT_FILE!),\n    },\n  },\n};" });
-            }
-        }
-    }
-    let cargo_toml = cwd.join("Cargo.toml");
-    if cargo_toml.exists() {
-        if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            if content.contains("actix-web") {
-                return Some(FrameworkInfo { name: "actix-web", config_hint: "Configure actix-web with rustls. See actix-web TLS documentation.\nUse SSL_CERT_FILE and SSL_KEY_FILE environment variables." });
-            }
-            if content.contains("axum") {
-                return Some(FrameworkInfo { name: "axum", config_hint: "Configure axum with axum-server and rustls:\n\nlet config = RustlsConfig::from_pem_file(\n    std::env::var(\"SSL_CERT_FILE\")?,\n    std::env::var(\"SSL_KEY_FILE\")?,\n).await?;" });
-            }
-            if content.contains("rocket") {
-                return Some(FrameworkInfo { name: "Rocket", config_hint: "Add to Rocket.toml:\n\n[default.tls]\ncerts = \"${SSL_CERT_FILE}\"\nkey = \"${SSL_KEY_FILE}\"" });
-            }
-            if content.contains("warp") {
-                return Some(FrameworkInfo { name: "warp", config_hint: "Configure warp with TLS:\n\nwarp::serve(routes)\n    .tls()\n    .cert_path(std::env::var(\"SSL_CERT_FILE\")?)\n    .key_path(std::env::var(\"SSL_KEY_FILE\")?)\n    .run(([127, 0, 0, 1], 443))\n    .await;" });
-            }
-        }
-    }
-    let requirements = cwd.join("requirements.txt");
-    let pyproject = cwd.join("pyproject.toml");
-    let python_content = std::fs::read_to_string(&requirements)
-        .ok()
-        .or_else(|| std::fs::read_to_string(&pyproject).ok());
-    if let Some(content) = python_content {
-        if content.contains("django") || content.contains("Django") {
-            return Some(FrameworkInfo { name: "Django", config_hint: "Use django-sslserver or the devssl proxy:\n\nOption 1 - django-sslserver:\n  pip install django-sslserver\n  python manage.py runsslserver --certificate $SSL_CERT_FILE --key $SSL_KEY_FILE\n\nOption 2 - devssl proxy:\n  python manage.py runserver 8000\n  devssl proxy 8000" });
-        }
-        if content.contains("flask") || content.contains("Flask") {
-            return Some(FrameworkInfo { name: "Flask", config_hint: "Configure Flask with SSL context:\n\napp.run(\n    ssl_context=(\n        os.environ['SSL_CERT_FILE'],\n        os.environ['SSL_KEY_FILE']\n    )\n)" });
-        }
-        if content.contains("fastapi") || content.contains("FastAPI") {
-            return Some(FrameworkInfo { name: "FastAPI", config_hint: "Run uvicorn with SSL:\n\nuvicorn main:app --ssl-keyfile=$SSL_KEY_FILE --ssl-certfile=$SSL_CERT_FILE" });
-        }
-    }
-    let go_mod = cwd.join("go.mod");
-    if go_mod.exists() {
-        if let Ok(content) = std::fs::read_to_string(&go_mod) {
-            if content.contains("github.com/gin-gonic/gin") {
-                return Some(FrameworkInfo { name: "Gin", config_hint: "Configure Gin with TLS:\n\nr := gin.Default()\nr.RunTLS(\":443\", os.Getenv(\"SSL_CERT_FILE\"), os.Getenv(\"SSL_KEY_FILE\"))" });
-            }
-            if content.contains("github.com/labstack/echo") {
-                return Some(FrameworkInfo { name: "Echo", config_hint: "Configure Echo with TLS:\n\ne := echo.New()\ne.StartTLS(\":443\", os.Getenv(\"SSL_CERT_FILE\"), os.Getenv(\"SSL_KEY_FILE\"))" });
-            }
-            if content.contains("github.com/gofiber/fiber") {
-                return Some(FrameworkInfo { name: "Fiber", config_hint: "Configure Fiber with TLS:\n\napp := fiber.New()\napp.ListenTLS(\":443\", os.Getenv(\"SSL_CERT_FILE\"), os.Getenv(\"SSL_KEY_FILE\"))" });
-            }
-            return Some(FrameworkInfo { name: "Go net/http", config_hint: "Use ListenAndServeTLS:\n\nhttp.ListenAndServeTLS(\":443\",\n    os.Getenv(\"SSL_CERT_FILE\"),\n    os.Getenv(\"SSL_KEY_FILE\"),\n    nil)" });
-        }
-    }
-    let gemfile = cwd.join("Gemfile");
-    if gemfile.exists() {
-        if let Ok(content) = std::fs::read_to_string(&gemfile) {
-            if content.contains("rails") {
-                return Some(FrameworkInfo { name: "Ruby on Rails", config_hint: "Use puma with SSL or the devssl proxy:\n\nOption 1 - Puma SSL (config/puma.rb):\n  ssl_bind '127.0.0.1', '3000', {\n    key: ENV['SSL_KEY_FILE'],\n    cert: ENV['SSL_CERT_FILE']\n  }\n\nOption 2 - devssl proxy:\n  rails server -p 3000\n  devssl proxy 3000" });
-            }
-            if content.contains("sinatra") {
-                return Some(FrameworkInfo { name: "Sinatra", config_hint: "Run Sinatra with SSL using WEBrick:\n\nset :server_settings, {\n  SSLEnable: true,\n  SSLCertificate: OpenSSL::X509::Certificate.new(File.read(ENV['SSL_CERT_FILE'])),\n  SSLPrivateKey: OpenSSL::PKey::RSA.new(File.read(ENV['SSL_KEY_FILE']))\n}" });
-            }
-        }
-    }
-    None
-}
-
 /// Output helper that respects --quiet and --verbose flags.
 #[derive(Clone, Copy)]
 struct Output {
@@ -753,7 +633,6 @@ fn run() -> Result<()> {
             ci,
             days,
             node,
-            detect,
             encrypt,
             ca_password,
             trust_stores,
@@ -764,7 +643,6 @@ fn run() -> Result<()> {
             ci,
             days,
             node,
-            detect,
             encrypt,
             ca_password,
             trust_stores,
@@ -844,9 +722,6 @@ fn run() -> Result<()> {
         ),
         Commands::Path { name } => cmd_path(&paths, name.as_deref()),
         Commands::Chain { name, output } => cmd_chain(&paths, &name, output.as_deref()),
-        Commands::Nginx { name } => cmd_nginx(&paths, &name),
-        Commands::Traefik { name } => cmd_traefik(&paths, &name),
-        Commands::DockerCompose { name } => cmd_docker_compose(&paths, &name),
         Commands::Qr { save, port, bind } => cmd_qr(&paths, save.as_deref(), port, &bind),
         Commands::Watch {
             exec,
@@ -883,7 +758,6 @@ fn cmd_init(
     ci: bool,
     days: Option<u32>,
     node: bool,
-    detect: bool,
     encrypt: bool,
     ca_password: Option<String>,
     trust_stores: Option<Vec<String>>,
@@ -982,26 +856,6 @@ fn cmd_init(
             "  export NODE_EXTRA_CA_CERTS=\"{}\"",
             paths.ca_cert.display()
         );
-    }
-
-    // Detect framework and print configuration hints if --detect flag is set
-    if detect {
-        println!();
-        if let Some(framework) = detect_framework() {
-            println!("Detected framework: {}", framework.name);
-            println!();
-            println!("Configuration hint:");
-            println!("{}", framework.config_hint);
-        } else {
-            println!("No framework detected in current directory.");
-            println!();
-            println!("Generic usage:");
-            println!("  Certificate: {}", paths.cert_path("localhost")?.display());
-            println!("  Private key: {}", paths.key_path("localhost")?.display());
-            println!();
-            println!("Or use the devssl proxy:");
-            println!("  devssl proxy <backend>  (e.g., 3000 or 192.168.1.5:3000)");
-        }
     }
 
     Ok(())
@@ -2082,58 +1936,6 @@ fn cmd_proxy(paths: &Paths, config: ProxyConfig, ca_password: Option<String>) ->
     })
 }
 
-fn cmd_nginx(paths: &Paths, name: &str) -> Result<()> {
-    // Use ensure_cert_exists for consistent error handling
-    let cert_path = paths.ensure_cert_exists(name)?;
-    let key_path = paths.ensure_key_exists(name)?;
-
-    println!("# Minimal nginx SSL configuration for development");
-    println!("# For production, add cipher config and ssl_trusted_certificate");
-    println!("ssl_certificate {};", cert_path.display());
-    println!("ssl_certificate_key {};", key_path.display());
-    println!("ssl_protocols TLSv1.2 TLSv1.3;");
-
-    Ok(())
-}
-
-fn cmd_traefik(paths: &Paths, name: &str) -> Result<()> {
-    // Verify certificate files exist
-    let cert_path = paths.ensure_cert_exists(name)?;
-    let key_path = paths.ensure_key_exists(name)?;
-
-    println!("# Minimal traefik TLS configuration for development");
-    println!("# For production, add CA trust and TLS options");
-    println!("tls:");
-    println!("  certificates:");
-    println!("    - certFile: {}", cert_path.display());
-    println!("      keyFile: {}", key_path.display());
-
-    Ok(())
-}
-
-fn cmd_docker_compose(paths: &Paths, name: &str) -> Result<()> {
-    // Verify certificate files exist
-    let cert_path = paths.ensure_cert_exists(name)?;
-    let key_path = paths.ensure_key_exists(name)?;
-
-    println!("# Minimal docker-compose volumes for SSL certificates");
-    println!("# Replace 'app' with your service name. For CA trust, also mount ca.crt");
-    println!("services:");
-    println!("  app:");
-    println!("    volumes:");
-    println!(
-        "      - {}:/etc/ssl/certs/{}.crt:ro",
-        cert_path.display(),
-        name
-    );
-    println!(
-        "      - {}:/etc/ssl/private/{}.key:ro",
-        key_path.display(),
-        name
-    );
-
-    Ok(())
-}
 fn cmd_watch(paths: &Paths, exec: &str, name: Option<&str>, interval_secs: u64) -> Result<()> {
     let cert_name = name.unwrap_or("localhost");
 
@@ -2387,6 +2189,7 @@ fn cmd_qr(paths: &Paths, save: Option<&std::path::Path>, port: u16, bind: &str) 
     let mut connections_per_ip: HashMap<String, (usize, SystemTime)> = HashMap::new();
     const MAX_CONNECTIONS_PER_IP: usize = 10;
     const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+    const MAX_TRACKED_IPS: usize = 1000; // Prevent unbounded memory growth
 
     // Auto-shutdown after 5 minutes of inactivity
     let mut last_request = Instant::now();
@@ -2424,6 +2227,25 @@ fn cmd_qr(paths: &Paths, save: Option<&std::path::Path>, port: u16, bind: &str) 
                         }
                     }
                 });
+
+                // CRITICAL: Prevent unbounded memory growth from DoS attacks
+                // If too many IPs tracked, remove oldest entries
+                if connections_per_ip.len() >= MAX_TRACKED_IPS {
+                    eprintln!(
+                        "Warning: Rate limit table full ({} IPs), clearing oldest entries",
+                        connections_per_ip.len()
+                    );
+                    // Find and remove the oldest 20% of entries
+                    let remove_count = MAX_TRACKED_IPS / 5;
+                    let mut entries: Vec<_> = connections_per_ip
+                        .iter()
+                        .map(|(ip, (_, time))| (ip.clone(), *time))
+                        .collect();
+                    entries.sort_by_key(|(_, time)| *time);
+                    for (ip, _) in entries.iter().take(remove_count) {
+                        connections_per_ip.remove(ip);
+                    }
+                }
 
                 // Check rate limit
                 let (count, _) = connections_per_ip.entry(ip.clone()).or_insert((0, now));

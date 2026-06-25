@@ -99,7 +99,7 @@ Certificate files are stored in:
 ### init
 
 ```bash
-devssl init [--force] [--skip-trust-store] [--ci] [--days N] [--node] [--detect] [--encrypt] [--ca-password PWD]
+devssl init [--force] [--skip-trust-store] [--ci] [--days N] [--node] [--encrypt] [--ca-password PWD]
 ```
 
 Creates CA, adds to system trust store, generates localhost certificate.
@@ -109,7 +109,6 @@ Creates CA, adds to system trust store, generates localhost certificate.
 | `--days N`      | Days until localhost certificate expires (default: config value, 365) |
 | `--ci`          | Skip trust store installation (for CI/Docker)                         |
 | `--node`        | Print `NODE_EXTRA_CA_CERTS` export command                            |
-| `--detect`      | Auto-detect framework and show configuration hints                    |
 | `--encrypt`     | Encrypt CA private key with a password                                |
 | `--ca-password` | Password for CA key encryption (requires `--encrypt`)                 |
 
@@ -304,15 +303,41 @@ Generate QR code for CA certificate installation on mobile devices. Starts a tem
 
 **Security Note:** The default bind address `0.0.0.0` exposes the CA certificate to your entire network. Use `--bind 127.0.0.1` on untrusted networks.
 
-### nginx / traefik / docker-compose
+### Using Certificates with Reverse Proxies
+
+For reverse proxies or custom configurations, use the certificate and key files directly:
 
 ```bash
-devssl nginx [NAME]
-devssl traefik [NAME]
-devssl docker-compose [NAME]
+# Get certificate paths
+devssl path myapp.local
+
+# Example output:
+#   Certificate: ~/.local/share/devssl/myapp.local.crt
+#   Private Key: ~/.local/share/devssl/myapp.local.key
 ```
 
-Output configuration snippets for various tools.
+**Generic reverse proxy config (nginx example):**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name myapp.local;
+
+    ssl_certificate /home/user/.local/share/devssl/myapp.local.crt;
+    ssl_certificate_key /home/user/.local/share/devssl/myapp.local.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://localhost:3000;
+    }
+}
+```
+
+**Or use the built-in proxy** (recommended for development):
+
+```bash
+devssl proxy 3000 --cert myapp.local
+```
 
 ### daemon
 
@@ -437,7 +462,6 @@ Note: `cert_days` is used by `init --days` when no value is specified. The `gene
 - Background auto-renewal daemon with certificate watching
 - Backup/restore and team CA sharing (export-ca/import-ca)
 - QR code generation for mobile device setup
-- Configuration generators (nginx, traefik, docker-compose)
 - Doctor command for trust store diagnostics
 - Native Rust implementation for performance and safety
 
